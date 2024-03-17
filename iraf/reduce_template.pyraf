@@ -1,0 +1,203 @@
+#############################################################################
+#  PyRAF/Unix reduction steps for 
+#
+# INIT
+#
+#############################################################################
+# get the env in gear. Install pyraflogin3 in ~/home/iraf.
+import numpy as np
+
+HOME=os.getenv('HOME')
+
+if(os.path.exists(f"{HOME}/iraf")):
+    print('loading pyraflogin3')
+    sys.path.insert(0, f"{HOME}/iraf")
+    from pyraflogin3 import *
+
+# set  OBSROOT=  # for IRAF commands
+# set  OBS=OBSROOT$/PreReduce/
+!printf "set OBSROOT=\n" "`pwd`/"         > setum.cl   # BASH trick
+!printf "set OBS=INIT/PreReduce\n"   >> setum.cl
+cl < setum.cl
+
+trimsec = None # '[640:*,550:725]'
+os.environ['TRIMSEC'] = trimsec
+
+show OBSROOT                                              # check work
+show OBS
+
+# Use Python/PyRAF to set ENV variables for scripts etc.
+# Rough equivalent of export.
+os.environ['OBSROOT'] = iraf.osfn("OBSROOT$")             # share with external files
+os.environ['OBS']     = iraf.osfn("OBS$")
+
+OBSROOT               = os.getenv("OBSROOT")              # make some python variables
+OBS                   = os.getenv("OBS")
+
+#-----------------------------------------------------------------------------
+
+chdir OBSROOT$                                           # Use IRAF lingo to change dirs
+!shopt -s nullglob; cp $OBSROOT/RawData/*fit $OBSROOT/RawData/*fits   .  # reduce data
+for f in *zip; do mv "$f"  RawData/attic; done        # move pesky files out of way.
+
+chdir OBS$
+pwd
+
+!shopt -s nullglob; cp $OBSROOT/RawData/*fits $OBSROOT/RawData/*fit .  # reduce data
+
+ll *fits *fit
+!fixnames $(cat l.l)
+#############################################################################
+# Handy python routines to set apall for first run (apallinteractive)
+#  and then apply to rest of a non-varying sequence (apallauto)
+#############################################################################
+#############################################################################
+# Handy python routines for the full interactive setup for first
+# of a sequence of nonvarying trace positions (apallinteractive)
+# then for automatic treatment (non-interactive) for the other
+# files in the sequence.
+#############################################################################
+def apallinteractive(llfile):
+    '''Using a list of files, pick one from the middle of
+    the list to do the interactive trace -- to improve
+    reusing the file as a reference trace for the rest of the
+    files in the mix.
+    Rewrite the llfile (list file) to be all files BUT the
+    middle one.
+    RETURN: the middle file name.
+    '''
+    iraf.apall.interactive          =  iraf.yes
+    iraf.apall.find                 =  iraf.yes
+    iraf.apall.recenter             =  iraf.yes
+    iraf.apall.resize               =  iraf.yes
+    iraf.apall.edit                 =  iraf.yes
+    iraf.apall.trace                =  iraf.yes
+    iraf.apall.fittrace             =  iraf.yes
+    iraf.apall.extract              =  iraf.yes
+    iraf.apall.extras               =  iraf.yes
+    iraf.apall.review               =  iraf.yes 
+    iraf.apall.references           =  ''
+    with open(llfile) as f:
+        lines = f.read().split()
+        refno = len(lines)//2
+        reffile = lines[refno]     #choose a file in middle of sequence
+    with open(llfile,'w') as o:
+        for f in lines:
+            if(f == reffile):
+                continue
+            print(f,file=o)
+    return reffile
+# apallinteractive
+
+def apallauto(reffile):
+    '''Using the returned file from apallinteractive as the reference
+    file, automatically apply appall to the shortened list of
+    rewritten by apallinteractive.
+    WATCH OUT for any file where the trace went awry.
+    '''
+    iraf.apall.interactive          =  iraf.no
+    iraf.apall.find                 =  iraf.no
+    iraf.apall.recenter             =  iraf.yes
+    iraf.apall.resize               =  iraf.yes
+    iraf.apall.edit                 =  iraf.no
+    iraf.apall.trace                =  iraf.yes
+    iraf.apall.fittrace             =  iraf.no
+    iraf.apall.extract              =  iraf.yes
+    iraf.apall.extras               =  iraf.yes
+    iraf.apall.review               =  iraf.no 
+    iraf.apall.references           =  reffile    # the file chosen from middle of sequence
+# apallauto
+
+def make1dspectrum(filename):
+    """Given a multispec file, write a 1D spectrum, appending
+    _1D to the root file name.
+    """
+    f       = fits.open(filename)
+    d       = f[0].data
+    h       = f[0].header
+    h.remove('NAXIS2', ignore_missing=False, remove_all=False)
+    h.remove('NAXIS', ignore_missing=False, remove_all=False)
+    h.remove('NAXIS3', ignore_missing=False, remove_all=False)
+    hdu     = fits.PrimaryHDU(data=d[0],header=h)
+    oname   = filename.split('.fits')[0]+'_1d.fits'
+    hdulist = fits.HDUList([hdu])
+    hdulist.writeto(oname,output_verify='silentfix', clobber=True)
+    return f'splot {oname}'
+# make1dspectrum
+
+def splotcheck(ll : str):
+    ''' Given a list file of .ms. or 1D spectra; generate a
+    cl file that runs them all sequentially. Don't do to many
+    as there is no real way to interupt until all are run.
+    Just 'q' out of each until done.
+    Creates the file c.cl
+    '''
+    with open(ll) as f, open('c.cl','w') as o:  # make list of files to splot test
+       for l in f:
+           print(f'splot {l.strip()}',file=o);
+    print('cl < c.cl  # cut/paste this ')
+# splotcheck
+
+############################### TRIM THE FILES ##############################
+!if [ "$TRIMSEC" != ' ' ; then trim -s $(TRIMSEC) $(cat l.l) ; fi  # trim makes t_//@l.l output!
+
+ll *fits
+!fitserial *fits
+
+################################ FIX HEADERS ################################
+ll a*fits
+!fixheader -D ../usw -c site.csv -c ASI296_camera.csv -c FS1spectrograph.csv @l.l
+# Find all science image (not calib images)
+!ls a*fits | grep -vi "\(dark\|bias\|flat\|relco\)" > rawobjects
+!awk -F_ -e '{print "hedit ", $0, "OBJECT ",$2," add+ update+ ver- show-";}' < rawobjects > fixheads.cl
+cl < fixheads.cl
+!awk -e '{print "hedit ", $0, "IMAGETYP object add+ update+ ver- show-";}' < rawobjects > fixheads.cl
+cl < fixheads.cl
+
+ll a*Dark*fits
+hedit @l.l IMAGETYP dark                            add+ update+ ver- show- del-
+hedit @l.l OBJECT Dark                              add+ update+ ver- show- del-
+hedit @l.l OBJECT "(OBJECT // ' ' // str(EXPTIME))" add+ update+ ver- show- del-
+
+
+# make alternate dark directories (can not scale CMOS darks)
+hselect @l.l EXPTIME '(IMAGETYP == "dark")' | sort | uniq > exptimes
+!for f in $(cat exptimes); do mkdir -v Darks${f}sec; done
+
+# distribute the files by exptime.
+hselect @l.l I$,EXPTIME '(IMAGETYP == "dark")' moves
+!awk -e '{printf("!mv %s Darks_%s_sec\n",$1,$2);}' <moves > movum.cl
+cl < moveum.cl
+
+### !mv $(cat l.l) Darks
+
+cat exptimes
+!for f in $(cat exptimes); do mkdir -v Flats${f}sec; done
+
+
+ll a*Relco*fits
+hedit @l.l IMAGETYP comp                            add+ update+ ver- show- del-
+hedit @l.l OBJECT NeAr                              add+ update+ ver- show- del-
+hedit @l.l OBJECT "(OBJECT // ' ' // str(EXPTIME))" add+ update+ ver- show- del-
+hselect @l.l OBJECT,$I yes
+
+!mv $(cat l.l) Cals
+
+ll a*Flat*fits
+hedit @l.l IMAGETYP flat                            add+ update+ ver- show- del-
+hedit @l.l OBJECT Flat                              add+ update+ ver- show- del-
+hedit @l.l OBJECT "(OBJECT // ' ' // str(EXPTIME))" add+ update+ ver- show- del-
+hselect @l.l OBJECT,$I yes
+
+!mv $(cat l.l) Flats
+
+ll a*Bias*fits
+hedit @l.l IMAGETYP zero                            add+ update+ ver- show- del-
+hedit @l.l OBJECT Zero                              add+ update+ ver- show- del-
+hedit @l.l OBJECT "(OBJECT // ' ' // str(EXPTIME))" add+ update+ ver- show- del-
+hselect @l.l OBJECT,$I yes
+
+!mv $(cat l.l) Zeros
+
+
+.ex  # exit the script when run in batch mode
