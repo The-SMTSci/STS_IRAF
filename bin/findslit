@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# (wg-astroconda-pdb)
+# (wg-python-fix-pdbrc)
+#
+#
+# (compile (format "python -m py_compile %s" (buffer-file-name)))
+# (compile (format "pydoc3 %s" (buffer-file-name)))
+#
+#############################################################################
+### HEREHEREHERE
+
+import os
+import optparse
+import sys
+import re
+import numpy as np
+from astropy.io import fits
+import matplotlib.pyplot as plt
+
+# (wg-python-types)
+#############################################################################
+#
+#
+#  /home/wayne/bin/findslit
+# (wg-python-emacs-help)
+#
+# (wg-python-toc)
+#
+# __doc__ = """
+# __author__  = 'Wayne Green'
+# __version__ = '0.1'
+# __all__     = ['','']   # list of quoted items to export
+# class AutoSlitException(Exception):
+#     def __init__(self,message,errors=None):
+#     @staticmethod
+#     def __format__(e):
+# class AutoSlit(object):
+#     #__slots__ = [''] # add legal instance variables
+#     def __init__(self,filename : str, /,                    # AutoSlit::__init__()
+#     def autosnr(self):                                      # AutoSlit.autosnr
+#     def viewtrimsec(self):                                  # AutoSlit.viewtrace()
+#     def debug(self,msg="",skip=[],os=sys.stderr):           # AutoSlit::debug()
+# if __name__ == "__main__":
+#
+#
+#
+# 2023-01-18T19:22:53-0700 wlg
+#############################################################################
+
+__doc__ = """findslit
+[options] files...
+
+Using a flat, create a trimsec and optional graphic.
+    -b --bias   <float> estimated bias count                         [100]
+    -g --gain   <float> estimaged gain                                 [1]
+    -i --image          generate a graphical image                 [False]
+    -m --margin <ing>   state a count of pixels for top/bottom margin [25]
+    -s --snr    <float> state desired SNR for left/right margins       [1]
+
+"""
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+__all__     = ['AutoSlit','AutoSlitException']   # list of quoted items to export
+
+
+##############################################################################
+# AutoSlitException
+#
+##############################################################################
+class AutoSlitException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(AutoSlitException,self).__init__("AutoSlit "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return f" AutoSlit: {e.__str__()}\n"
+# AutoSlitException
+
+
+##############################################################################
+# AutoSlit
+#
+##############################################################################
+class AutoSlit(object):
+    """ Given a flat image; determine the trimsec for the trace of the slit.
+    Allow a margin [pixels] to keep.
+    Allow -l -r to trim from the left and right to drop noisy sub-SNR regions.
+    TODO: auto compute the auto SNR region.
+    """
+    #__slots__ = [''] # add legal instance variables
+    # (setq properties `("" ""))
+    pltkw = {"linewidth" : 0.5}   # place to add fancy matplotlib needs.
+
+    def __init__(self,filename : str = "",     # AutoSlit::__init__()
+                 snr : float  = 100,     # the level of science were doing
+                 options      = None,    # get verbose if we want, at least
+                 gain : float = 1,       # header will override
+                 bias : int   = 1,       # estimated bias level default zero subtracted.
+                 margin : int = 25):     # top/bottom margin left and right raw
+        """A class that uses a flat to determine the trace area for the slit
+        based on SNR"""
+
+        self.snr        = snr                               # Internalize the params
+        self.options    = options
+        self.margin     = margin
+        self.filename   = filename
+
+        if(filename == ""):
+            raise AutoSlitException("Missing filename")
+
+        try:
+            with fits.open(filename) as f:
+                self.d          = f[0].data                 # remember [y][x]
+                self.h          = f[0].header
+        except Exception as e:
+            print(f"file {filename} error:\n  {e.__str__()}",file=sys.stderr)
+            raise
+
+        self.naxis1     = int  (self.h.get('NAXIS1'  ,0))    # has to be a 2d image.
+        self.naxis2     = int  (self.h.get('NAXIS2'  ,None)) # get the NAXIS2 for height.
+        self.dispaxis   = int  (self.h.get('DISPAXIS',1))    # presume row-parallel traces.
+        self.gain       = float(self.h.get('GAIN'    ,1.0))  # get the gain keyword.
+
+        if(self.naxis2 is None):                             # Must be a two-D image
+            raise AutoSlitExceptionself(f"file {self.filename} missing naxis2")
+
+        self.d          = self.d * self.gain                 # convert to photons.
+        self.tsum       = self.d.sum(axis=[0,1][self.dispaxis==1]) / self.naxis1
+        self.maxa       = self.tsum[self.tsum.argmax()] * .3
+        self.w          = np.where(self.tsum > self.maxa)
+        self.top        = self.w[0][0]
+        self.bottom     = self.w[0][-1]
+        self.ssum       = None                               # place holders
+        self.snravg     = None
+        self.maxs       = None
+        self.left       = None                               #  Left margin deferred...
+        self.right      = None                               # right margin defered.
+
+        if(self.top - self.margin > 0):                      # keep small a margin [25]
+            top    = self.top - self.margin
+        if(self.bottom + self.margin < self.naxis2):
+            bottom = self.bottom - self.margin
+        self.autosnr()                                       # with top/bottom guess SNR.
+
+    ### AutoSlit.__init__()
+
+    def autosnr(self):
+        """Presume the original flat has been initially processed
+        and gain corrected. We want pixel values > snr squared.
+        """
+        slittrace   = self.d[self.top:self.bottom,:]
+        self.ssum   = slittrace.sum(axis=[1,0][self.dispaxis==1])
+        self.snravg = self.ssum/self.naxis1                  # Average signal
+        signal      = np.where(self.snravg > self.snr**2)    # the SNR we're wanting
+        if(len(signal[0]) < 1):                              # make sure the signal is strong
+            self.left   = 0                                  # Whole image
+            self.right  = self.naxis2                        #   for this case.
+        else:
+            self.left   = signal[0][0]                       # Selected bits
+            self.right  = signal[0][-1]
+
+        return self
+
+    ### AutoSlit.autosnr
+
+    def viewtrimsec(self):                                        # AutoSlit.viewtrace()
+        """See the plot of the slit-trace"""
+        figs,axes = plt.subplots(1,2,figsize=(8,5)) # get matplotlib in gear.
+        fname     = self.filename.split('/')[-1]
+        figs.suptitle(f"{fname}\nSNR ({self.trimsec} {self.snr} = {self.snr**2} Photons)")
+
+        axes[0].plot(range(self.tsum.shape[0]),self.tsum,**AutoSlit.pltkw)
+        axes[0].axhline(y=self.maxa,color='red',**AutoSlit.pltkw)
+        axes[1].plot(range(self.snravg.shape[0]),self.snravg,**AutoSlit.pltkw)
+        if(self.left != 0):
+            axes[1].axvline(x=self.left,color='blue',**AutoSlit.pltkw)
+            axes[1].axvline(x=self.right,color='red',**AutoSlit.pltkw)
+        else:
+            if(self.options and self.options.verboseflag):
+                print(f"Skipping vline {self.left} {self.right}")
+        axes[0].set_ylabel("Whole Image ADU")
+        axes[0].set_xlabel("Across Slit")
+        axes[1].set_xlabel("Along Slit")
+        plt.show()
+
+        return self
+
+    ### AutoSlit.viewtrace()
+
+    def trimsec(self):                                       # AutoSlit.trimsec()
+        """Report the trimsec based as [left:right,top:bottom]"""
+        self.trimsec = f"[{self.left+1}:{self.right+1},{self.top+1}:{self.bottom+1}]"
+
+        return self
+
+    ### AutoSlit.trimsec()
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # AutoSlit::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("AutoSlit - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print(f'{key:20s} =',file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+
+        return self
+
+    ### AutoSlit.debug()
+
+# class AutoSlit
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+# HEREHEREHERE
+if __name__ == "__main__":
+    opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+    opts.add_option("-b", "--bias", action="store", dest="bias",
+                   default=1,
+                   help="<float>     estimated bias level.")
+
+    opts.add_option("-g", "--gain", action="store", dest="gain",
+                   default=1,
+                   help="<float>     estimated gain level.")
+
+    opts.add_option("-i", "--image", action="store_true", dest="image",
+                   default=False,
+                   help="<bool>      Display Graphic.")
+
+    opts.add_option("-s", "--snr", action="store", dest="snr",
+                   default=1,
+                   help="<float>     SNR levels.")
+
+    opts.add_option("-m", "--margin", action="store", dest="margin",
+                   default=25,
+                   help="<float>     margin for top/bottom [pixels].")
+
+    opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>      be verbose about work.")
+
+    (options, args) = opts.parse_args()
+
+    try:                         # get the options in gear
+        msg    = f"SNR conversion {options.snr}"   ; snr    = float(options.snr)
+        msg    = f"Margin {options.margin}"        ; margin = int(options.margin)
+        msg    = f"Bias counts {options.margin}"   ; bias   = int(options.bias)
+        msg    = f"Estimaged gain {options.gain}"  ; gain   = float(options.gain)
+    except Exception as e:
+        print(f"{msg}\n{e.__str__()}\n{__doc__}")
+        sys.exit(1)
+
+    for filename in args:
+        img  = AutoSlit(filename,options=options,bias=bias,margin=margin,snr=snr)
+        #img.debug(skip=['h'])
+        img.trimsec()
+        if(options.image):
+            img.viewtrimsec()
+        print(f"{img.trimsec}")
+

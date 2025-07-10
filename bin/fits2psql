@@ -1,0 +1,1268 @@
+#!/usr/bin/env python3
+
+#############################################################################
+#  git fitsutils/py/fits2psql
+# (find-file-other-frame "./.pdbrc")
+# (compile (format "python -m py_compile %s" (buffer-file-name)))
+# (compile (format "python -m pydoc %s" (buffer-file-name)))
+#
+#
+# emacs helpers (set-background-color "light blue")
+# (wg-python-toc)
+# (wg-python-fix-pdbrc)
+#
+# (wg-python-toc)
+#
+# __doc__ = """
+# __author__  = 'Wayne Green'
+# __version__ = '0.2'
+# __renames__   = []                                # bucket holding -r switch regexp,str requests
+# __nulltests__ = []
+# __numtest__   = re.compile(r"^[+-]*['0-9.e]+$")   # v = 'NCG1290' v='-12.4e6' v='+12' __numtest__.match(v)
+# __fixchars__  = re.compile(r'[^A-Za-z0-9_]+')
+# __noquote__   = re.compile(r'[\'\"]' )            # support re.sub
+# __nocomma__   = re.compile(r'[,]')                # support re.sub
+# __debugflag__ = False                             # HACK...
+# __pathname__ = "No Path Name"
+# def oldway(options):
+#       __pathname__ = pathname
+#                      if(type(v).__name__ == 'str' ):
+# class FITSHeaderException(Exception):
+#    def __init__(self,message,errors=None):
+# class FITSHeader:  # FITSHeader(object) if inherited
+#    def __init__(self,astropy_header):                # FITSHeader::__init__()
+#    def compile(self):                                # FITSHeader::compile()
+#    def fixkey(self,tkey):                            # FITSHeader::fixkey()
+#    def fixvalue(self,tvalue):                        # FITSHeader.fixvalue()
+#    def debug(self,msg="",os=sys.stderr):             # FITSHeader::debug()
+#    def __float__(self):                              # FITSHeader::__float__()
+#    def __getitem__(self,idx):                        # FITSHeader::__getitem__()
+#    def __iter__(self):                               # FITSHeader::__iter__()
+#    def next():                                       #  FITSHeader::next()
+#    @staticmethod
+#    def anybody_callme(parm):  # no 'self' anybody can call
+# class PSQLFITSHeaderException(Exception):
+#    def __init__(self,message,errors=None):
+# class PSQLFITSHeader(FITSHeader):
+#    def __init__(self,fitsheader):                    # PSQLFITSHeader::__init__()
+#    def debug(self,msg="",os=sys.stderr):             # PSQLFITSHeader::debug()
+#    def timestamp():                                  # PSQLFITSHeader::timestamp
+#    def mergeheaders(self,collection):                # PSQLFITSHeader::mergeheaders
+#    @staticmethod
+#    def sanitize_string(pstr):                        # PSQLFITSHeader::sanitize_string()
+#    @staticmethod                                     # PSQLFITSHeader::numtest()
+#    def numtest(pstr):
+#    @staticmethod
+#    def nulltest(pstr):                               # PSQLFITSHeader::nulltest()
+#    @staticmethod
+#    def floatstr(pstr):                               # PSQLFITSHeader::floatstr()
+#    @staticmethod
+#    def intstr(pstr):                                 # PSQLFITSHeader::intstr()
+#    @staticmethod
+#    def textstr(pstr=''):                             # PSQLFITSHeader::textstr()
+#    @staticmethod
+#    def valformat(pstr):                              # PSQLFITSHeader::valformat::()
+#    @staticmethod
+#    def fixcolnames(pstr):                            # PSQLFITSHeader::fixcolnames()
+#    def __getitem__(self,idx):                        # PSQLFITSHeader::__getitem__()
+#    def __iter__(self):                               # PSQLFITSHeader::__iter__()
+#    def next():                                       # PSQLFITSHeader::next()
+# def fit2fitslog(msg='no message'):
+# if __name__ == "__main__":
+#
+# (compile (format "python -m py_compile %s" (buffer-file-name)))
+# (compile (format "python -m pydoc %s" (buffer-file-name)))
+#
+#
+# 2015-01-03T07:52:53-0700 wlg
+# 2017-07-05T09:01:37-0600 wlg   fully convert to psql with new ideas
+#############################################################################
+import optparse
+import os
+import re
+import sys
+from collections     import OrderedDict
+try:
+     import numpy
+     from astropy.io import fits
+except:
+     print("Unable to import pyfits.",file=sys.stderr)
+
+import csv
+import time
+import warnings
+
+warnings.filterwarnings("error")  # catch this damned things from pyfits.
+
+# to handle the Unicode filenames from Win1X
+_encoding = 'utf-8'                         # deal with nt's UTF issues.
+if(os.name == 'nt'):
+     _encoding = 'utf-16'
+# with io.open(listname,'r',encoding=_encoding) as f:
+
+__doc__     = """
+
+EMERGING NEW CODE: 2017-07-05T09:01:32-0600
+
+[options] files...
+
+    fits2psql *fits > psqlsource.sql
+
+or
+
+    find . -name "*fits" | xargs fits2psql > psqlsource.sql
+
+    -D to specify database  (PSQL sense of switch)
+    -s to specify the schema to use.
+    -t to specify a special table name
+
+    -l --lines  count of lines per insert statement  [100].
+    -r "KEYWORD;PSQL_Field_Name"
+    -w show warnings
+    --files <FileWithOneNamePerLine>
+    --debug show statements beyond verbose
+    --missing='NA,~,999' --missing=nil ... map any of these 'values' to NULL. "" is presumed NULL
+
+Produce a ASCII file suitable for loading into psql with the '\\i' commannd.
+
+Given a mix of FITS files containing headers with a heterogeneous mix
+of types; make a database with column names for all the headers found;
+merge HISTORY and COMMENTS into one entry; Take the headerqs as we find
+them.  Tak any means necessary to make headers consistent as needed;
+update the headers prior to this task (e.g.: fit2fits). The files are not
+changed, the database contains the modified names.
+
+To be consistent across data sources, the names ora, odec and object
+are used to record the coordinates and the object name. In the event
+a given data source's column name is a SQL keyword, the letter 'o'
+is prepended to disambiguate.
+
+The databases of choice are sqlite3 and PostgreSQL. PostgreSQL uses
+down-cased (lower case) for all column names. Columns are case
+insensitive in sqlite3. The filters of R and r are thus the same
+and need to be translated. There are other cases where this will
+be needed. The -r switch allows names to be reassigned as needed.
+
+When reporting results, the ora and odec fields always come first.
+This is needed for SAMP interoperability and meets the expectations
+of SAOImage/ds9.
+
+IRAF uses object,zero,dark,flat for the main image types, for
+the 'Light Frame', BIAS, DARK, FLAT types of keywords popular with
+amateur software. These are transliterated where needed.
+
+The filename and the  fully qualified path name are both recorded.
+The MD5SUM of the file is recorded to assure there are no duplications
+based on filenames.
+
+Amateur software encodes details within filenames. This may include
+the target name, a form of the datetime, and often appends a sequence
+number. 
+
+Note: PSQL internal buffer size may be a bit small, so break large number
+of insert statements into units of -l --lines, default is 100 lines.
+
+Note: Best not to mix spectroscopy and photometry files. Use two tables.
+
+Go through all the files; grab the dictionaries of headers, clean them
+by merging out all HISTORY,COMMENT fields, ignore blank fields.
+
+Then make column headers from a mash of all the keys; for each file
+create a row with the filename, and every appropriate key value.
+
+Make text and float entries as can, and add NULL for any file's
+missing.
+
+Later: Add a crossover header name
+          for IMAGETYP and IMGTYPE
+          EXPOSE vs OBJECT etc.
+
+          Fix the position data to
+
+          Save this table's mix of field names into a special table in
+          the schema called DB_SCHEMA_TABLE_FITS: with a json dump of
+          the main control. This will allow adding files to the mix ...later.
+
+NOTES LEFT OVER FROM THE OLD WAY.
+
+A long list of FITS files may have some mix of keywords, some comments
+and some history statements. LCOGT even has blank fields BAD!. We
+group all comments and history into their respective TEXT fields. Not
+all files will have the same keywords nor will values necessarily have
+the same meaning. Nobody seems to pay attention to the FITS standards
+document especially w.r.t. time, there is wide variation in the
+IMAGETYP keyword, some using IMGTYPE for example. The image of the
+celestial body is called 'light' by some 'object' by others and other
+things as well. The fit2fits utility should be used first to rewrite
+or add fields as required for the program and to be consistent with
+the IRAF processing environment.
+
+Step 1: pass through each FITS file, and build a master list of all
+keywords we see. This in dictionary format.  While we're at it; make
+sure filename is unique and capture the key,values from the
+header. Translate everything into printable format and store together
+with the filename as a record. Each of these records may have keys
+missing from the master list - we will treat these as NULLs.
+
+Step 2: Make allkeys = [None,None] and prepare to accept the formats
+for each of the fields
+
+Step 3: make a large master record, null fields for missing keywords
+this file, and convert everything to printable text - quotes for text
+fields. Make a matrix of field types per file. Each field should be
+the same; float trumps int; mixed is bad.
+
+Step 4: verify all the field names are good and there is one and only
+one agreeable type for the field. Default to TEXT and let the user
+deal with it later.
+
+Step 5: Generate the preamble to the sql table, and fill in the
+fields. Generate the table postamble.
+
+Step 6: Generate the INSERT statement (fun!)
+
+Step 7: Generate each record
+
+Step 8: generate a SELECT COUNT(*) from tablename; statement
+to pop up the first question we usually ask anyway.
+
+Notes:
+
+FITS keywords are all caps and occasionally have a dash
+(e.g. DATE-OBS) or collide with SQL keywords (e.g. DEC). Some keywords
+we like to change to be consistent with catalogs from Vizier (e.g.  RA
+to ora - a floating representation of a right ascension). This program
+enforces IRAF, SQL and internal conventions.
+
+Comments, more specifically history, statements carry flags and notes
+from the LCOGT pipeline and may be needed later. Collect them now.
+
+Change any single quotes to double quotes to pass SQL syntax.
+
+/home/wayne/clones/newbin/newbin/fits2sql
+"""
+
+
+__author__    = 'Wayne Green'
+__version__   = '0.2'
+
+__renames__   = []                                # bucket holding -r switch regexp,str requests
+__nulltests__ = []
+__numtest__   = re.compile(r"^[+-]*['0-9.e]+$")   # v = 'NCG1290' v='-12.4e6' v='+12' __numtest__.match(v)
+__fixchars__  = re.compile(r'[^A-Za-z0-9_]+')
+__noquote__   = re.compile(r'[\'\"]' )            # support re.sub
+__nocomma__   = re.compile(r'[,]')                # support re.sub
+__debugflag__ = False                             # HACK...
+
+__pathname__  = "No Path Name"
+
+##############################################################################
+# SQL table/file tidbits. Bits of the output text.
+#
+##############################################################################
+
+# tablename is clean or schema.tablename
+# tabletop supply the (databasename,tablename,tablename,tablename,tablename)
+tabletop = """\\c %s
+DROP TABLE     IF EXISTS %s;
+DROP SEQUENCE  IF EXISTS %s;
+CREATE SEQUENCE %s_sequence START 100000;
+
+CREATE TABLE %s (
+    UniqueID  integer PRIMARY KEY DEFAULT nextval('%s_sequence'),
+    fname     text,
+    ora       double precision default null,
+    odec      double precision default null""" # we depend on NO NEWLINE here (commas as needed later.)
+
+# tablebottom supply the (tablename)
+tablebottom = """);"""  # NO SEMI-COLON HERE
+
+insertstmt = """
+INSERT INTO %s (fname"""  # the missing ora,odec handled nicely by SQL (commas as needed later.)
+
+##############################################################################
+# SQL/FITS keyword collisions, and internal consistency values.
+# keywords to be avoided as field names at all costs!
+##############################################################################
+
+sql_keywords = {
+"add"                : "oadd"               , "lines"               : "olines",
+"all"                : "oall"               , "load"                : "oload",
+"alter"              : "oalter"             , "localtime"           : "olocaltime",
+"analyze"            : "oanalyze"           , "localtimestamp"      : "olocaltimestamp",
+"and"                : "oand"               , "lock"                : "olock",
+"as"                 : "oas"                , "long"                : "olong",
+"asc"                : "oasc"               , "longblob"            : "olongblob",
+"asensitive"         : "oasensitive"        , "longtext"            : "olongtext",
+"before"             : "obefore"            , "loop"                : "oloop",
+"between"            : "obetween"           , "low_priority"        : "olow_priority",
+"bigint"             : "obigint"            , "match"               : "omatch",
+"binary"             : "obinary"            , "mediumblob"          : "omediumblob",
+"blob"               : "oblob"              , "mediumint"           : "omediumint",
+"both"               : "oboth"              , "mediumtext"          : "omediumtext",
+"by"                 : "oby"                , "middleint"           : "omiddleint",
+"call"               : "ocall"              , "minute_microsecond"  : "ominute_microsecond",
+"cascade"            : "ocascade"           , "minute_second"       : "ominute_second",
+"case"               : "ocase"              , "mod"                 : "omod",
+"change"             : "ochange"            , "modifies"            : "omodifies",
+"char"               : "ochar"              , "natural"             : "onatural",
+"character"          : "ocharacter"         , "not"                 : "onot",
+"check"              : "ocheck"             , "no_write_to_binlog"  : "ono_write_to_binlog",
+"collate"            : "ocollate"           , "null"                : "onull",
+"column"             : "ocolumn"            , "numeric"             : "onumeric",
+"condition"          : "ocondition"         , "on"                  : "oon",
+"connection"         : "oconnection"        , "optimize"            : "ooptimize",
+"constraint"         : "oconstraint"        , "option"              : "ooption",
+"continue"           : "ocontinue"          , "optionally"          : "ooptionally",
+"convert"            : "oconvert"           , "or"                  : "oor",
+"create"             : "ocreate"            , "order"               : "oorder",
+"cross"              : "ocross"             , "out"                 : "oout",
+"current_date"       : "ocurrent_date"      , "outer"               : "oouter",
+"current_time"       : "ocurrent_time"      , "outfile"             : "ooutfile",
+"current_timestamp"  : "ocurrent_timestamp" , "precision"           : "oprecision",
+"current_user"       : "ocurrent_user"      , "primary"             : "oprimary",
+"cursor"             : "ocursor"            , "procedure"           : "oprocedure",
+"database"           : "odatabase"          , "purge"               : "opurge",
+"databases"          : "odatabases"         , "read"                : "oread",
+"day_hour"           : "oday_hour"          , "reads"               : "oreads",
+"day_microsecond"    : "oday_microsecond"   , "real"                : "oreal",
+"day_minute"         : "oday_minute"        , "references"          : "oreferences",
+"day_second"         : "oday_second"        , "regexp"              : "oregexp",
+"dec"                : "odec"               , "release"             : "orelease",
+"decimal"            : "odecimal"           , "rename"              : "orename",
+"declare"            : "odeclare"           , "repeat"              : "orepeat",
+"default"            : "odefault"           , "replace"             : "oreplace",
+"delayed"            : "odelayed"           , "require"             : "orequire",
+"delete"             : "odelete"            , "restrict"            : "orestrict",
+"desc"               : "odesc"              , "return"              : "oreturn",
+"describe"           : "odescribe"          , "revoke"              : "orevoke",
+"deterministic"      : "odeterministic"     , "right"               : "oright",
+"distinct"           : "odistinct"          , "rlike"               : "orlike",
+"distinctrow"        : "odistinctrow"       , "schema"              : "oschema",
+"div"                : "odiv"               , "schemas"             : "oschemas",
+"double"             : "odouble"            , "second_microsecond"  : "osecond_microsecond",
+"drop"               : "odrop"              , "select"              : "oselect",
+"dual"               : "odual"              , "sensitive"           : "osensitive",
+"each"               : "oeach"              , "separator"           : "oseparator",
+"else"               : "oelse"              , "set"                 : "oset",
+"elseif"             : "oelseif"            , "show"                : "oshow",
+"enclosed"           : "oenclosed"          , "smallint"            : "osmallint",
+"escaped"            : "oescaped"           , "soname"              : "osoname",
+"exists"             : "oexists"            , "spatial"             : "ospatial",
+"exit"               : "oexit"              , "specific"            : "ospecific",
+"explain"            : "oexplain"           , "sql"                 : "osql",
+"false"              : "ofalse"             , "sqlexception"        : "osqlexception",
+"fetch"              : "ofetch"             , "sqlstate"            : "osqlstate",
+"float"              : "ofloat"             , "sqlwarning"          : "osqlwarning",
+"float4"             : "ofloat4"            , "sql_big_result"      : "osql_big_result",
+"float8"             : "ofloat8"            , "sql_calc_found_rows" : "osql_calc_found_rows",
+"for"                : "ofor"               , "sql_small_result"    : "osql_small_result",
+"force"              : "oforce"             , "ssl"                 : "ossl",
+"foreign"            : "oforeign"           , "starting"            : "ostarting",
+"from"               : "ofrom"              , "straight_join"       : "ostraight_join",
+"fulltext"           : "ofulltext"          , "table"               : "otable",
+"goto"               : "ogoto"              , "terminated"          : "oterminated",
+"grant"              : "ogrant"             , "then"                : "othen",
+"group"              : "ogroup"             , "tinyblob"            : "otinyblob",
+"having"             : "ohaving"            , "tinyint"             : "otinyint",
+"high_priority"      : "ohigh_priority"     , "tinytext"            : "otinytext",
+"hour_microsecond"   : "ohour_microsecond"  , "to"                  : "oto",
+"hour_minute"        : "ohour_minute"       , "trailing"            : "otrailing",
+"hour_second"        : "ohour_second"       , "trigger"             : "otrigger",
+"if"                 : "oif"                , "true"                : "otrue",
+"ignore"             : "oignore"            , "undo"                : "oundo",
+"in"                 : "oin"                , "union"               : "ounion",
+"index"              : "oindex"             , "unique"              : "ounique",
+"infile"             : "oinfile"            , "unlock"              : "ounlock",
+"inner"              : "oinner"             , "unsigned"            : "ounsigned",
+"inout"              : "oinout"             , "update"              : "oupdate",
+"insensitive"        : "oinsensitive"       , "upgrade"             : "oupgrade",
+"insert"             : "oinsert"            , "usage"               : "ousage",
+"int"                : "oint"               , "use"                 : "ouse",
+"int1"               : "oint1"              , "using"               : "ousing",
+"int2"               : "oint2"              , "utc_date"            : "outc_date",
+"int3"               : "oint3"              , "utc_time"            : "outc_time",
+"int4"               : "oint4"              , "utc_timestamp"       : "outc_timestamp",
+"int8"               : "oint8"              , "values"              : "ovalues",
+"integer"            : "ointeger"           , "varbinary"           : "ovarbinary",
+"interval"           : "ointerval"          , "varchar"             : "ovarchar",
+"into"               : "ointo"              , "varcharacter"        : "ovarcharacter",
+"is"                 : "ois"                , "varying"             : "ovarying",
+"iterate"            : "oiterate"           , "when"                : "owhen",
+"join"               : "ojoin"              , "where"               : "owhere",
+"key"                : "okey"               , "while"               : "owhile",
+"keys"               : "okeys"              , "with"                : "owith",
+"kill"               : "okill"              , "write"               : "owrite",
+"label"              : "olabel"             , "xor"                 : "oxor",
+"leading"            : "oleading"           , "year_month"          : "oyear_month",
+"leave"              : "oleave"             , "zerofill"            : "ozerofill",
+"left"               : "oleft",
+"like"               : "olike",
+"limit"              : "olimit",
+# Datatypes (folded into two columns )
+"bigint"             : "obigint"            , "numeric"             : "onumeric",
+"blob"               : "oblob"              , "precision"           : "oprecision",
+"char"               : "ochar"              , "raw"                 : "oraw",
+"date"               : "odate"              , "clob"                : "oclob",
+"datetime"           : "odatetime"          , "real"                : "oreal",
+"decimal"            : "odecimal"           , "set"                 : "oset",
+"double"             : "odouble"            , "smallint"            : "osmallint",
+"enum"               : "oenum"              , "text"                : "otext",
+"float"              : "ofloat"             , "time"                : "otime",
+"int"                : "oint"               , "timestamp"           : "otimestamp",
+"integer"            : "ointeger"           , "tinyblob"            : "otinyblob",
+"longblob"           : "olongblob"          , "tinyint"             : "otinyint",
+"longtext"           : "olongtext"          , "tinytext"            : "otinytext",
+"mediumblob"         : "omediumblob"        , "varchar"             : "ovarchar",
+"mediumint"          : "omediumint"         , "varchar2"            : "ovarchar2",
+"mediumtext"         : "omediumtext"        ,  "year"               : "oyear",
+"number"             : "onumber",
+
+# special fields we want for consistency
+"ra"                 : "ora"                , "target"              : "object",
+
+
+} # end sql_keywords
+
+##############################################################################
+#  common keywords we translate into to taste in a consistent fashion.
+#    leave ra and dec keywords alone. Fix later in sql.
+##############################################################################
+fixcolnamestable = {
+# columnname     dbname
+    'ra'       : 'ora',                       # match conventions
+    'dec'      : 'odec',                      # dec is a keyword, oops
+    'o_dec'    : 'odec',                      # sql fixup up to conventions
+    'object'   : 'oname',                     # match conventions
+    'dec_'     : 'odec',                      # VOTable rename
+    '_raj2000' : 'ora',                       # AAVSO etc
+    '_dej2000' : 'odec'                       # AAVSO etc
+}
+
+##############################################################################
+# oldway - preserve the old very complicated way, as I learned what was
+# really needed.
+#
+##############################################################################
+def oldway(options):
+    """
+    Old was was just a very complicated def.
+    """
+    allkeys       = {}                       # any key we see goes in here.
+    compiled      = {}                       # each file is unique, save the values of dict
+    formats       = {}                       # build up the field's formats
+    report        = {}                       # each filename, all headers, combined comment/history
+    fieldnames    = []                       # enforce this order later
+    mapnames      = {}                       # map original FITS keyword to fixed name.
+    nullrets      = {}
+
+    ioerrors      = []                       # accumulate IOErrors
+    unknownerrors = []                       # accumulate unknown
+    lc            = 0                        # count successful opened files into cdict
+
+    ###################################################################
+    #  Into the compiled dictionary, add all FITS files;
+    #  match the filename (key) to its dictionary of headers
+    #  (the single value). Update the initially empty allkeys
+    #  with each of the dictionaries - the value comes along but
+    #  ignore those keys values - allkeys just accumulates the
+    #  keys.
+    ###################################################################
+    freport = False
+    if(options.sourcelist != None):
+         filelist = FileList(options.sourcelist)
+         freport = True
+         print(f"FYI: Using filelist {options.sourcelist}",file=sys.stderr)
+    else:
+         filelist = args
+
+    rawfilecount = 0
+    for pathname in filelist:
+         if(pathname in compiled):             # make sure filename is unique
+               print(f"File {pathname} already seen, skipping.",file=sys.stderr)
+               continue
+
+         filename     = os.path.basename(pathname)
+         __pathname__ = pathname
+
+         cdict        = {}                     # make a dict of this files key,value pairs
+         comments     = []
+         historys     = []
+         fdescs       = {}
+         #with warnings.catch_warnings():      # process all the keys in the header
+         warnings.filterwarnings("error")
+         if(1):
+               try:
+                  with fits.open(pathname) as f:
+                     rawfilecount += 1
+                     header   = f[0].header       # grab the header.
+                     for k,v in header.items():
+                        if(k != ''):              # lack of else affects a 'contunue'
+                           if(type(v).__name__ == 'str' ):
+                              v = __noquote__.sub("_",v)
+                           if(k == 'HISTORY'):    # append all history and comments
+                              historys.append(v)  # into a blob for the DB.
+                           elif(k == 'COMMENT'):
+                              comments.append(v)
+                           else:
+                              cdict[k] = v
+                              fdes = header.comments[k]
+                              if(fdes):
+                                 fdescs[k] = sanitize_string(fdes)  # remember the commenty part of this record
+
+                  # bottom of with statement
+               except IOError as e:
+                  ioerrors.append("%s %s " % (pathname,e))
+               except Warning as e:
+                  ioerrors.append("Warning: %s %s " % (pathname,e))
+               except Exception as e:
+                  unknownerrors.append("%s %s" % (pathname,e))
+                  raise
+
+         # doctor up the history and comment blobs
+         rawhist    = ';'.join(historys)               # and merged history/comments to this record
+         hist       = __noquote__.sub('_',rawhist)     #  change single quotes to double
+         #hist = __nocomma__.sub(' ',rawhist)          # temp change commas to spaces.
+
+         rawcomment = ';'.join(comments)       # and merged history/comments to this record
+         comm       = __noquote__.sub('_',rawcomment)  #  change single quotes to double
+         #comm = __nocomma__.sub(' ',comm)     # temp change commas to spaces.
+
+         cdict['HISTORY'] = hist               # add merged/doctored history and comments to
+         cdict['COMMENT'] = comm               # this 'compiling' record image
+         lc += 1
+         if(options.verboseflag):  # DEBUG HACK make tiny for easier review.
+               cdict['HISTORY'] = "The history stuff"
+               cdict['COMMENT'] = "The comment stuff"
+
+         cdict['fqpname'] = pathname;
+         allkeys.update(cdict)                 # collect every key we see.
+
+         compiled[filename] = cdict.copy()     # dict of every file with all of its keywords.
+
+    ##################################################################
+    # prepare the 'allkeys' template default NULL and formats to accept
+    # all the SQL format types seen for each field. (They should all be the
+    # same).
+    ##################################################################
+    for k in allkeys.keys():
+         allkeys[k] = [None,None]              # make the template's values SQL nulls
+         formats[k] = []                       # create a dictionary to carry format details
+
+    ###################################################################
+    #  Process all files recorded in 'compiled'. For each field
+    #  make a printable image of the value and accumulate the
+    #  type shown. Float trumps INT, all history/comment cards
+    #  collapsed into one array each.
+    #  Default to text - keep image and sort out later in process
+    #  BOOL is treated as text 'True' or 'False' (SIMPLE and EXTEND)
+    #
+    ###################################################################
+    for filename,cdict in compiled.items():
+         records  = allkeys.copy()             # Set defaults for missing keys this FITS file
+         for k,v in cdict.items():
+               k = k.strip()                      # any embedded spaces (Zwo has them = fits error)
+               sqltype = 'text'                   # default to text unless overwritten
+               if(' ' in k ):                     # skip and warn about keys with spaces
+                  print(f"Found a space in a key '{k}'",file=sys.stderr)
+                  continue
+               elif(k == ''):                     # ignore  empty keys in LCOGT files.
+                  continue
+               elif(k == 'COMMENT'):              # aggregated comments and history done above
+                  val = v                         # statements as BLOBS == text in psql
+                  sqltype = 'text'
+               elif(k == 'HISTORY'):
+                  val = v
+                  sqltype = 'text'
+               else:                              # based on python type of v...
+                  sqltype,val = {                 # determine tuple with SQL type value and of card
+                     'int'       : (lambda x: ('integer'         ,"%d"   % int(float(x)), )),
+                     'float'     : (lambda x: ('double precision',"%f"   % float(x)     , )),
+                     'str'       : (lambda x: ('text'            ,"'%s'" % x            , )),
+                     'bool'      : (lambda x: ('text'            ,"'%s'" % x            , )),
+                     'NoneType'  : (lambda x: ('text'            ,'NULL'                , ))
+                     }.get(type(v).__name__,(lambda x: ('text' , 'NULL'       , )))(v)
+               records[k] = [sqltype,val]
+               formats[k].append([filename,sqltype])      # one entry per k per file
+         report[k] = records                # report is {filename : {FITSKWD, [SQLTYPE , printable value]}}
+
+    ###################################################################
+    # At this point, all header/value pairs of files have been parsed into a
+    # dictionary, filename as the key; a dictionary of the keywords and
+    # values; comments and history records all merged into one and blank
+    # cards skipped.
+    #
+    # 'formats' has all the types offered for each key. They should
+    # all be the same. The sqltype has been determined from above.
+    #
+    # Now we test that each key (k) across all files is same, and determine
+    # the conversion function for the fields. If there are more
+    # than one type: we default to text with textstr. The '%s' takes
+    # all comers. Remember BOOL has been mapped to text.
+    #
+    # While we're at it; for all keys, apply fixcolnames() the FITS keys.
+    ###################################################################
+
+    field_descriptions = {}                  # make sure all the entries are same
+    for k,v in formats.items():              # all determined types for each keyword
+      types = {}                             # make dict with key as the type
+      typeerrs = {}
+      for tv in v:
+           t = tv[1]                           # the SQLtype this key, tv[0] is error.
+           fn = tv[0]                          # corresponding filename
+           if(t != None and t not in types):
+                 types[t] = 0                     # accumulate types (only one!)
+                 typeerrs[t] = fn                 # the whole story
+           types[t] += 1                       # might as well say howmany of each type
+      if(len(types) != 1 ):                  # there should only be one type!
+           print(f"Types {types} being changed to 'text' for key {k}",file=sys.stderr)
+           for efn,etype in typeerrs.items():
+                 print(f"   {etype:10s} {efn}",file=sys.stderr)
+           t = 'text'                          # if not, force to be text.
+      fixedname = fixcolnames(k)             # here we alter the keyword to fieldname
+      if(fixedname in mapnames ):
+           print(f"fixedname already seen {fixedname} {k}",file=sys.stderr)
+      mapnames[fixedname] = k                # fixedname : FITSKWD
+
+      convfunc = { 'integer'   : intstr,     # match name and type converter
+                        'real' : floatstr,
+                        'text'  : textstr,
+                      }.get(t,textstr )
+      field_descriptions[fixedname] = [t,k,convfunc]  # new,old name and conv func
+      fieldnames.append(fixedname)           # guarantee same keyword order across all VALUES statements
+
+    ###################################################################
+    #  Output the SQL Table and VALUES this run.
+    ###################################################################
+    print( tabletop % (options.database, options.tablename, options.tablename,
+                           options.tablename,options.tablename, options.tablename),end='')
+    comma = ",\n"
+
+    sk = sorted(fieldnames)
+    for k in sk:                             # fieldname  SQLTYPE
+         sqlt = field_descriptions[k][0]
+         print(f"{comma}   {k:-10s} {sqlt}",end='')
+
+    # print the fields formats etc.          # ENGINE ...
+    print(f"\n{tablebottom}")
+
+    if(options.createonly):
+         sys.exit(0)                           # our jod done this run
+
+    ###################################################################
+    #  Print the INSERT stmt and VALUES lines
+    ###################################################################
+    rcomma           = ""
+    valcount         = vallimit
+    filecount        = 0
+    comma            = ","
+    subesquentinsert = False
+
+    for filename,record in compiled.items(): # record {FITSKWD : value}
+         if(valcount == vallimit):             # time to break over and print new set of records.
+               valcount = 0                       # emit second/subsequent INSERT statement(s)
+               rcomma   = ""                       # reset trailing comma
+               if(subesquentinsert):
+                  print(";",end='')
+               subesquentinsert = True
+               print("\n\n")
+               print(insertstmt % options.tablename,end='')
+               sn = sorted(fieldnames)
+               for n in sn:                       # print the INSERT fields,,,
+                  print("f{comma}{n}",end='')
+               print(") VALUES")
+         print(f"{rcomma}  ({valformat(filename)} ",end='') # emit a value line
+         rcomma = ",\n"                        # prepare for first/more VALUE lines
+         fcomma = ","
+         try:                               # guard this area, let user know I need to
+               sk = sorted(fieldnames)
+               for k in sk:
+                  func = field_descriptions[k][2]
+                  if(mapnames[k] not in record):
+                     print("{fcomma} 'NULL'",end='')
+                  else:
+                     #print("dbg",k,mapnames[k],record[mapnames[k]],file=sys.stderr))
+                     rv = func(record[mapnames[k]])
+                     if(rv == 'NULL'):
+                        if(mapnames[k] not in nullrets):
+                           nullrets[mapnames[k]] = 0
+                        nullrets[mapnames[k]] += 1
+                     val = __nocomma__.sub(';',rv)
+                     print(f"{fcomma} {val}",end='')
+         except Exception as e:
+               unknownerrors.append("%s %s" % (filename, e ))
+               print(f"Exception {e}",file=sys.stderr)
+               print(f"Values output exception",file=sys.stderr)
+               print(f"file name                 {filename}",file=sys.stderr)
+               print(f"field name                {k}",file=sys.stderr)
+               print(f"mapnames[k]=|%s|          {mapnames[k]}",file=sys.stderr)
+               print(f"record[mapnames[k]] = |{type(record[mapnames[k]])}|",file=sys.stderr)
+               print(f"func: {func}",file=sys.stderr)
+               raise Exception("Main Error")
+         print(" )",end='')
+         valcount  += 1                     # count this record.
+         filecount += 1
+
+    if(valcount != 0 ):                   # follow up closing semi-colon as needed.
+         print(";")
+
+    ###################################################################
+    #  Group certain errors all together onto tail of stderr output.
+    ###################################################################
+    if(options.warningflag):
+         if(len(ioerrors) != 0 ):
+               print("IOErrors",file=sys.stderr)
+               for l in ioerrors:
+                  print(f"{l}",file=sys.stderr)            # mass print these in parsable way
+
+         if(len(unknownerrors) != 0 ):
+               print("Unknown Errors",file=sys.stderr)
+               for l in unknownerrors:
+                  print(f"{l}",file=sys.stderr)           # mass print these in parsable way
+
+    # emit a little sanity check at tail of file.
+    print(f"""\n\nSELECT \'{options.tablename}\' as "tablename",COUNT(*) from {options.tablename};""")
+    print(f"\n-- Files processed {filecount} {lc} {len(compiled )}")
+
+    if(freport):
+         print(f"{filelist.report()}",file=sys.stderr)
+
+    desctbl = options.tablename+"_meta"
+    print(f"DROP TABLE IF EXISTS {desctbl};")
+    print(f"CREATE TABLE {desctbl} (mfield text, mdesc text);")
+    print(f"INSERT INTO {desctbl} (mfield,mdesc) VALUES")
+    comma = ""
+    keys  = fdescs.keys()
+    keys.sort()
+    for k in keys:
+         print(f"""{comma} ('{k.lower()}','{sanitize_string(fdescs[k])}')""")
+         comma = ",\n"
+    print(";")
+
+    metaname = options.tablename+"_meta"
+    if(0):
+         print(f"SELECT COUNT(*) from {options.tablename};")
+         print(f"""SELECT '{metaname}' as "Tablename,"COUNT(*) from {metaname};""")
+         print(f"""UPDATE {options.tablename} set ora=s2r(headerra),odec=s2d(headerdec);""")
+
+    # make a record of where we were and what we did.
+    fit2fitslog("%s db=%s tbl=%s" % (os.getcwd(), options.database, options.tablename))
+
+    if(options.verboseflag and len(nullrets) != 0):
+         print("Errors: Null Returns",file=sys.stderr)
+         rvkeys = nullrets.keys()
+         rvkeys.sort()
+         for rv in rvkeys:
+               print(f"  {nullrets[rv]:4d} {rv}",file=sys.stderr)
+
+    print(f"rawfilecount {rawfilecount}",file=sys.stderr)
+
+# def oldway
+
+##############################################################################
+# FITSHeaderException
+#
+##############################################################################
+class FITSHeaderException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+         super(FITSHeaderException,self).__init__("Bias "+ message)
+         self.errors = errors
+# FITSHeaderException
+
+##############################################################################
+# FITSHeader - just make a dictionary of the header values.
+#
+##############################################################################
+class FITSHeader:  # FITSHeader(object) if inherited
+    """ Assimilate a header into OUR format, suited for psql.
+    Given an Astropy Header, dig out the details and create database information.
+    astropy.io.fits.header.Header
+    """
+
+    my_class_variable = None
+
+    def __init__(self,astropy_header :                # FITSHeader::__init__()
+                   astropy.io.fits.header.Header):
+         """Initialize this class."""
+         #super(base,self).__init__()
+         #self.
+         self.header    = astropy_header
+         self.ourheader = OrderedDict()           # { 'newkey' : [val, comment, oldkey], ... }
+         self.ourkeys   = {}                                # convert to our format
+
+    ### FITSHeader.__init__()
+    def compile(self):                                # FITSHeader::compile()
+         """Compile the given astropy_header into our format.
+         For each card, in card order that we retain, translate
+         keywords to our database format. Make sure there are not
+         any keyword collisions. Leave the data in their own format
+         and rely on PSQL BJSON to maintain things for us.
+         """
+
+         for card in self.header.cards:                      # fix ky, save the val and comment 
+             k,v,c  = c
+             # fix the values
+             newkey = fixkey(k)
+             self.ourheader.get(newkey,[]).append([self.fixvalue(v), c, k])
+
+         # check the new collection for inadvertent keyword collisions.
+         for k,v in self.ourheaders.items():
+             if(len(v) != 1):
+                 msg = f""" FITSHeader.compile(): Duplicate keyword: newkey = {newkey},"""
+                 for oldkeys in v:
+                     msg += f"""{v[2]}  """
+                 raise FITSHeaderException(msg)
+         return self
+
+    ### FITSHeader.compile()
+
+    def fixkey(self,tkey):                            # FITSHeader::fixkey()
+         """Given a test key, fix it if needed. The main fixes
+         to the header needs to be done before this step with
+         fit2fits and fitsrewrite. Those tasks take care of
+         the heavy lifting of converting EXPOSE to EXPTIME,
+         and DATE and TIME to DATEOBS etc. Here we're on guard for
+         things that collied with the PostgreSQL database."""
+         ret = sql_keywords.get(tkey,tkey)              # fix if there, return if not
+
+         return tkey
+
+    ### FITSHeader.fixkey()
+
+    def fixvalue(self,tvalue):                        # FITSHeader.fixvalue()
+         """Given a test value, fix it if needed. This one is harder
+               than might be immagined. There may be floats, ints, missings.
+               Odd little codes for missing data like '~' or 'NA' or -999.
+               Rules:
+                  keep floats and ints as a clear string (no quote marks) string
+                  keep missing or bad values as NULL
+                  obvious string values are surrounded by a SINGLE QUOTE (psql requirement)
+               At the end, when generating the table, everything is a string.
+
+         """
+         ret       = tkey
+         qmarks    = ['"',"'"]
+         tickcount = len([c for c in tkey if c in qmarks])
+         if(tickcount != 0):
+               tstr = tkey.strip()                            # no leading/trailing
+               if(tstr[0] in qmarks and tstr[-1] in qmarks):  # starts with some sort of quote
+                  tstr = tstr[1:-1].strip()                   # strip leading/trailing from contents
+               tkey = "'%s'" % ("".join([ [a,"''%s"%a][a in qmarks] for a in tstr]))
+         elif(tkey in FITSHeader.missings):    # indicates a no-data for this 'row'
+               ret = 'NULL'
+         else:
+               if(type(tkey) == type(1.1) or type(tkey) == type(1)):   # cheap float/int test
+                  tkey = "%s" % tkey
+               else:
+                  ret = tkey # standin for rules to come.
+
+         return ret
+
+    ### FITSHeader.fixvalue()
+
+    def debug(self,msg="",os=sys.stderr):             # FITSHeader::debug()
+         """Help with momentary debugging, file to fit."""
+         print(f"PSQLConnection -FITSHeader {msg}",file=os)
+         for key,value in self.__dict__.items():
+               print(f"{key:20s} = {value}")
+
+         return self
+
+    ### FITSHeader.debug()
+
+    __FITSHeader_debug = debug  # preserve our debug name if we're inherited
+
+    def __float__(self):                              # FITSHeader::__float__()
+         """What to do if used as a a float (int etc)"""
+
+    ### FITSHeader.__float__()
+
+    def __getitem__(self,idx):                        # FITSHeader::__getitem__()
+         """Index operator this class."""
+         if( idx < mycondition):
+               raise IterationError("Done with the iteration")
+         return [idx]
+
+    ### FITSHeader.__getitem__()
+
+    def __iter__(self):                               # FITSHeader::__iter__()
+         """self.data is some iteratable thingy"""
+         for thingy in self.data:
+               yield thingy
+
+    ### FITSHeader.__iter__()
+
+    def next():                                       #  FITSHeader::next()
+         """ """
+         if( endcondition ):
+               raise StopIteration()
+         return # thingy
+
+    ### FITSHeader.next()
+
+    @staticmethod
+    def anybody_callme(parm):  # no 'self' anybody can call
+         """ """
+         return parm+parm # My interpretation of ill defined equation
+
+    ### static anybody_callme()
+
+# class FITSHeader
+
+##############################################################################
+# PSQLFITSHeaderException
+#
+##############################################################################
+class PSQLFITSHeaderException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+         super(PSQLFITSHeaderException,self).__init__("Bias "+ message)
+         self.errors = errors
+# PSQLFITSHeaderException
+
+##############################################################################
+# PSQLFITSHeader
+#
+##############################################################################
+class PSQLFITSHeader(FITSHeader):
+    """ Manage the psql stuff for a fits header. variable renaming etc.
+    """
+
+    missings = []              # set with PSQLFITSHeader.missings = missingvalarray
+
+    def __init__(self,fitsheader):                    # PSQLFITSHeader::__init__()
+         """Initialize this class."""
+         super(PSQLFITSHeader,self).__init__(fitsheader)            # will compile fro us.
+
+    ### PSQLFITSHeader.__init__()
+
+    def debug(self,msg="",os=sys.stderr):             # PSQLFITSHeader::debug()
+         """Help with momentary debugging, file to fit."""
+         print(f"PSQLConnection -PSQLFITSHeader {msg}",file=os)
+         for key,value in self.__dict__.items():
+               print(f"{key:20s} = {value}")
+
+         return self
+
+    ### PSQLFITSHeader.debug()
+
+    def timestamp():                                  # PSQLFITSHeader::timestamp
+      """Use our processed header to get a timestampe"""
+      raise PSQLFITSHeaderException("PSQLFITSHeader.timestamp() unimplemented")
+
+    ### PSQLFITSHeader.timestamp
+
+    def mergeheaders(self,collection):                # PSQLFITSHeader::mergeheaders
+         """Given the master dictionary, add any new fields init with array of
+         NULLS to date, and update any existing/overlapping fields with its
+         proper value or a NULL if field not in this file."""
+         #raise PSQLFITSHeaderException("PSQLFITSHeader.mergeheaders() unimplemented")
+
+    ### PSQLFITSHeader.mergeheaders
+
+    ##################################################################
+    #  static methods:
+    #  sanitize_string(pstr) - clean string
+    #  numtest(pstr)         - bool if pstr is a number
+    #  nulltest(pstr)        - Change to NULL, like old FORTRAN 999, or '-' in field.
+    #  floatstr(pstr)        - is pstr a float
+    #  intstr(pstr)          - is pstr an integer
+    #  textstr(pstr='')      - is pstr text
+    #  valformat(pstr)       - is pstr valid
+    #  fixcolnames(pstr)     - translate keywords and use consistent vocabulary
+    #
+    ##################################################################
+
+    ##############################################################################
+    # sanitize_strings - These routines could be cleaned up to include
+    # filename and keyword,
+    ##############################################################################
+    @staticmethod
+    def sanitize_string(pstr):                        # PSQLFITSHeader::sanitize_string()
+         """Remove all non-ascii characters in strings. Tables that have washed
+               around via LaTeX, variants of Word, and various countries tend to
+               pick up Unicode charaters. Usually they are not numeric in any
+               fashion - so remove chars right off the bat.
+         """
+         ret = ''.join([i for i in pstr if ord(i) < 127])
+         if(ret == ""):
+               ret = 'NULL'
+         ret=__noquote__.sub("_",ret)
+         return ret
+
+    ### PSQLFITSHeader.sanitize_string()
+
+    ##############################################################################
+    # numtest - field must be float or NULL. Int is subset of float.
+    #
+    ##############################################################################
+    @staticmethod                                     # PSQLFITSHeader::numtest()
+    def numtest(pstr):
+         """pstr is text from the sheet, it must be numeric or NULL"""
+         ret = __numtest__.match(pstr)   # None or something
+         if(pstr == 'NULL'):             # None for NULL, but NULL is ok
+               ret = pstr                   # ... re-supply the string as validator
+         return ret
+
+    ### PSQLFITSHeader.numtest()
+
+    ##############################################################################
+    # nulltest - apply any series of compiled re statements. None at the
+    #  moment.
+    ##############################################################################
+    @staticmethod
+    def nulltest(pstr):                               # PSQLFITSHeader::nulltest()
+         """Using all the patterns in nullests, return None or 'NULL'"""
+         ret = pstr
+         for r in __nulltests__:
+               if(r.match(pstr)):
+                  if(__debugflag__): print(f"nulltest returning null for |{pstr}|",file=sys.stderr)
+                  raise
+                  ret = 'NULL'
+         return pstr
+
+    ### PSQLFITSHeader.nulltest()
+
+    ##############################################################################
+    # floatstr - a function to map values into table format and supply
+    #   NULL for missing values. This test may vary with choice of empty
+    #   field indicator.
+    ##############################################################################
+    @staticmethod
+    def floatstr(pstr):                               # PSQLFITSHeader::floatstr()
+         """Map values into table format and supply NULL for missing
+               values. This test may vary with choice of empty field
+               indicator. Return a quoted value or NULL. We write text
+               to the output file.
+         """
+         ret = 'NULL'
+         if(type(pstr) == type(1.0 )):
+               ret = "%f" % pstr
+         else:
+               print(f"floatstr returning null for |{pstr}|",file=sys.stderr)
+               raise
+
+         return ret
+
+    ### PSQLFITSHeader.floatstr()
+
+    ##############################################################################
+    # intstr - make the value a real integer, float it first to force floor
+    #   operation.
+    ##############################################################################
+    @staticmethod
+    def intstr(pstr):                                 # PSQLFITSHeader::intstr()
+         """Map values into table format and supply NULL for missing
+               values. This test may vary with choice of empty field
+               indicator. Return a quoted value or NULL. We write text
+               to the output file.
+         """
+         ret = 'NULL'
+         if(type(pstr) == type(1)):
+               ret = "%d" % int(float(pstr))
+         else:
+               print(f"intstr returning null for |{pstr}|",file=sys.stderr)
+               raise
+         return ret
+
+    ### PSQLFITSHeader.intstr()
+
+    ##############################################################################
+    # textstr - a function to map values into table format
+    #  NULL for missing values. This test may vary with choice of empty
+    #  field indicator.
+    ##############################################################################
+    @staticmethod
+    def textstr(pstr=''):                             # PSQLFITSHeader::textstr()
+         """Map values into table format and supply NULL for missing
+               values. This test may vary with choice of empty field
+               indicator. Return a  value or NULL.
+         """
+         ret = 'NULL'
+         if(pstr!=''):
+               ret = "'%s'"%pstr
+         else:
+               #print >>sys.stderr,"textstr returning null for |%s|" % pstr,
+               #print >>sys.stderr,"  file path |%s|" % __pathname__
+               ret = 'NULL'
+               #raise Exception("NULL return from textstr") # dbg
+         return ret
+
+    ### PSQLFITSHeader.textstr()
+
+    ##############################################################################
+    # valformat - all values in the intermediate table are strings. Numbers
+    # do not have quotes; neither does NULL. numbers are sans-quotes
+    ##############################################################################
+    @staticmethod
+    def valformat(pstr):                              # PSQLFITSHeader::valformat::()
+         """Test the pstr and convert to a string"""
+         ret = 'NULL'                             # straight text
+         typetext = type(pstr).__name__           # speed this up
+         if(pstr != ""):                          # based on type make sure its ASCII
+               if(  typetext == 'float'     ): ret = "%f"   % pstr   # straight text
+               elif(typetext == 'integer'   ): ret = "%d"   % pstr   # straight text
+               elif(typetext == 'str'       ):
+                  m = __numtest__.match(pstr)        # sometimes, KEY is not converted to
+                  #print "__numtest__",pstr,m        # internal format but should have been
+                  if(m):
+                     ret = pstr
+                  else:
+                     ret = "'%s'" % pstr              # quoted text, fix in database
+               else:
+                  ret = "STUPID"                      # No idea what type to use.
+                  print(f"Bad type {pstr} {type(pstr)}",file=sys.stderr)
+                  raise
+         return ret
+
+    ### PSQLFITSHeader.valformat.()
+
+    ##############################################################################
+    # fixcolnames - given a candidate fieldname, return an acceptable one.
+    ##############################################################################
+    @staticmethod
+    def fixcolnames(pstr):                            # PSQLFITSHeader::fixcolnames()
+         """Given name as pstr, undo crap that spreadsheet dudes
+         put in their names. Make a usable SQL name. Remove blanks
+         and other special characters (not in [^ a-zA-Z0-9_]), force ascii,
+         then hack SQL keyword exact matches."""
+         tstr = pstr.lower().strip()                        # all in lowercase,,,
+         for r in __renames__:                              # honor -r requests
+               if(r[0].match(tstr)):
+                  if(__debugflag__): print(f"fixcolnames changing {pstr} to {r[1]}",file=sys.stderr)
+                  tstr = r[1]
+                  break                                        # take the first one
+         newstr   = __fixchars__.sub("_",tstr)              # pstr->strict char set
+         newerstr = sql_keywords.get(newstr,newstr)         # if not in sql_keywords go with newstr
+         newest   = fixcolnamestable.get(newerstr,newerstr) # if not in fixcolnamestable go with newerstr
+         return newest
+
+    ### PSQLFITSHeader.fixcolnames()
+
+    def __getitem__(self,idx):                        # PSQLFITSHeader::__getitem__()
+         """Index operator this class."""
+         if( idx < mycondition):
+               raise IterationError("Done with the iteration")
+         return [idx]
+
+    ### PSQLFITSHeader.__getitem__()
+
+    def __iter__(self):                               # PSQLFITSHeader::__iter__()
+         """self.data is some iteratable thingy"""
+         for thingy in self.data:
+               yield thingy
+
+    ### PSQLFITSHeader.__iter__()
+
+    def next():                                       # PSQLFITSHeader::next()
+         """ """
+         if( endcondition ):
+               raise StopIteration()
+         return # thingy
+
+    ### PSQLFITSHeader.next()
+
+# class PSQLFITSHeader
+
+##############################################################################
+# fit2fitslog - if .gao/fits2sql.log exists, dump message there
+# together with a timestamp.
+##############################################################################
+def fit2fitslog(msg='no message'):
+    """Check to see if ~/.gao/fits2sql.log exists, open and append run info"""
+    lfname = os.getenv('HOME')+'/.gao/fits2sql.log'
+    tfmt   = "%d%b%Y %H:%M:%S"
+    if(os.path.exists(lfname)):
+         with open(lfname,'w+') as lf:
+               ctime = time.strftime(tfmt,time.gmtime())
+               print(f"{ctime} {msg}",file=lf)
+#  fit2fitslog
+
+##############################################################################
+#                                    Main
+##############################################################################
+
+if __name__ == "__main__":
+
+    opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+    opts.add_option("-D", "--database", action="store", dest="database",
+                         default='testspirits',
+                         help="<str>       name of the database [spirits].")
+
+    opts.add_option("-t", "--tablename", action="store", dest="tablename",
+                         default='fit2sql',
+                         help="<str>       name of table [csvtable].")
+
+    opts.add_option("-s", "--schema", action="store", dest="schema",
+                         default='',
+                         help="<str>       name of schema for the database [csvtable].")
+
+    opts.add_option("-f", "--files", action="store", dest="sourcelist",
+                         default=None,
+                         help="<filename>  supply a very long list of files for work.")
+
+    opts.add_option("-l", "--lines", action="store", dest="vallimit",
+                         default=50.0,
+                         help="<int>       the lines per INSERT statement (50).")
+
+    opts.add_option("-r", "--rename", action="append", dest="renames",
+                         default=[],
+                         help="<'oldpattern;newname'>     change a known header (regexp) to fixed name.")
+
+    opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                         default=False,
+                         help="<bool>      be verbose about work.")
+
+    opts.add_option("--create", action="store_true", dest="createonly",
+                         default=False,
+                         help="<bool>      Create database, stop before insert stmts.")
+
+    opts.add_option("--missing", action="store", dest="missing",
+                         default=[],
+                         help="<array>     append one or more of form missing[,moremissing].")
+
+    opts.add_option("-w", "--ignore-warnings", action="store_false", dest="warningflag",
+                         default=True,
+                         help="<bool>      show accumulated warnings on stderr.")
+
+    (options, args) = opts.parse_args()
+    oldway(options)
+    sys.exit(0)
+
+    vallimit    = int(float(options.vallimit))
+    missingvals = []                                   # accumulate missing tags like -999 or NA or '~'.
+    fileheaders = {}
+
+    for v in options.missing:
+         parts = map(str.strip,v.split(','))
+         for p in parts:
+               missingvals.append(p)
+    PSQLFITSHeader.missings = missingvals
+
+    # if --files are used, then collect into the args.
+    if(options.sourcelist):
+         try:
+               with open(options.sourcelist, 'r') as f:
+                  for l in f:
+                     if('#' in l):
+                        continue
+                     args.append(l.strip())                 # one file per line
+         except:
+               print("fits2psql: Unable to process --files list.",file=sys.stderr)
+
+    # collect the files for the table one at a time, prepare as we go
+    for filename in args:
+         with fits.open(filename) as f:
+               fh = PSQLFITSHeader(f[0].header)             # funcky astropy header.
+               fileheaders[fh.timestamp] = fh               # hash in time order.
+
+    # across all the files use each header to make a comprehensive
+    # set of fields. Fields missing from a file are NULL-ed.
+    tablefields = {}                           # {goodfieldnname : [value or null]...}
+    for ts,fh in fileheaders.items():                  # process in any order
+         fh.mergeheaders(tablefields)                    # merge our fields with this one
+
+    fh.debug()
+

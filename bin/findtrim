@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# (wg-myconda-pdb)
+# (wg-python-fix-pdbrc)
+# (wg-pdb)
+#
+# (compile (format "python -m py_compile %s" (buffer-file-name)))
+# (compile (format "pydoc3 %s" (buffer-file-name)))
+#
+#############################################################################
+### HEREHEREHERE
+
+import os
+import optparse
+import sys
+import re
+import numpy as np
+from astropy.io import fits
+
+
+import matplotlib.pyplot as plt
+#from matplotlib import rc
+plt.style.use('ggplot')
+
+__FSDEBUG = [False,True][os.getenv('FSDEBUG') == '']
+
+# (wg-python-types)
+#############################################################################
+#
+#
+#  /home/wayne/bin/findtrim
+# (wg-python-emacs-help)
+#
+# (wg-python-toc)
+#
+# __doc__ = """
+# __author__  = 'Wayne Green'
+# __version__ = '0.1'
+# __all__     = ['FindTrimException','FindTrim']   # list of quoted items to export
+# class FindTrimException(Exception):
+#     def __init__(self,message,errors=None):
+#     @staticmethod
+#     def __format__(e):
+# class FindTrim(object):
+#     def __init__(self,options,infiles : [] = []):           # FindTrim::__init__()
+#     def getfilenames(self):                                 # FindTrim.getfilenames()
+#     def debug(self,msg="",skip=[],os=sys.stderr):           # FindTrim::debug()
+#     def findtrim(self):                                     # FindTrim.findtrim()
+#     def getsection(self):                                   # FindTrim.getsection()
+# if __name__ == "__main__":
+#
+#
+#2023-04-19T21:54:49-0600 wlg -- initial hack
+#############################################################################
+
+__doc__ = """
+
+/home/wayne/bin/findtrim
+[options] files...
+
+  files may be free-list of files, a wildcard or an IRAF list file:
+  findtrim a.fits b.fits ... 
+  findtrim @l.l -p
+
+  -p  --plot   make plots of each file.
+
+      --minx   Zero order artifact messes with the basic algorithm
+      --maxx   These provide a way to alter these values.
+      --miny
+      --maxy
+
+  Note: The edges of the spectrum in Y have fuzzy diffraction artifacts.
+        Accepting too much X noise skews polynomial values.
+
+"""
+
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+__all__     = ['FindTrimException','FindTrim']   # list of quoted items to export
+
+
+##############################################################################
+# FindTrimException
+#
+##############################################################################
+class FindTrimException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(FindTrimException,self).__init__("FindTrim "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return f" FindTrim: {e.__str__()}\n"
+# FindTrimException
+
+
+##############################################################################
+# FindTrim
+#
+##############################################################################
+class FindTrim(object):
+    """ Find the trim section based on cals or flats.
+      FindTrim.getsection() return string of [X:X,Y:Y].
+      The presumption being the edges are low in value, then
+      the area jumps up (ends of lines, edge of the flat).
+      By summing the file along the dispersion axis (DISPAXIS=1)
+      a decent profile is created.
+    """
+
+    def __init__(self,options,infiles : [] = []):           # FindTrim::__init__()
+        """Initialize this class."""
+        #super().__init__()
+        # (wg-python-property-variables)
+        self.options = options
+        self.infiles = infiles
+        self.border  = int(options.border)
+        self.files   = []
+        self.trimsec = []
+        self.minx    = options.minx
+        self.maxx    = options.maxx
+        self.miny    = options.miny
+        self.maxy    = options.maxy
+        if(self.minx is not None):                        # grab user's desired values now
+            self.minx = int(self.minx)                    # delay until header is obtained for later.
+        if(self.maxx is not None):
+            self.maxx = int(self.maxx)
+        if(self.miny is not None):
+            self.miny = int(self.miny)
+        if(self.maxy is not None):
+            self.maxy = int(self.maxy)
+
+        self.getfilenames()
+
+    ### FindTrim.__init__()
+
+    def getfilenames(self):                                 # FindTrim.getfilenames()
+        """From the args, get the filenames into self.files"""
+        for v in self.infiles:
+            if('@' in v):
+                pre = ""
+                if("//" in v):
+                    pre,v = v.split('//')
+                if('@' in v):
+                    _,listname = v.split('@')
+                if(len(listname) == 2):
+                    pre,listname = listname
+                with open(listname,'r') as listoffiles:
+                    for f in listoffiles:
+                        self.files.append(pre+f.strip())
+            else:
+                self.files.append(v)
+
+        return self
+
+    ### FindTrim.getfilenames()
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # FindTrim::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("FindTrim - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print(f'{key:20s} =',file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+
+    ### FindTrim.debug()
+
+    def findtrim(self):                                     # FindTrim.findtrim()
+        """for the files in self.files; determine the trim area"""
+        ranges = []                                  # save [ [xmin,xmax,ymin,ymax],...]
+        border = int(self.border)
+        for infile in self.files:
+            with fits.open(infile) as f:
+                try:
+                    trimsecs = {"xmin" : [],
+                                "xmax" : [],
+                                "ymin" : [],
+                                "ymax" : [],
+                               }
+                    h        = f[0].header                                 #           y  ,  x
+                    d        = f[0].data                                   # d.shape (4210, 6280)
+
+                    if(self.minx is None):                                 # take care of delayed value assignment.
+                        self.minx = 0                                      # from init.
+                    if(self.maxx is None):
+                        self.maxx = h['NAXIS1']
+                    if(self.miny is None):
+                        self.miny = 0
+                    if(self.maxy is None):
+                        self.maxy = h['NAXIS2']
+
+                    naxis1   = h["NAXIS1"]                                 # remember np is [naxis2,naxis1]
+                    naxis2   = h["NAXIS2"]   # PDB-DEBUG
+                    w        = np.where(d<0)
+                    if(len(w[0]) != 0):                                    # we have a winner
+                        w = np.where(d==0)
+                        dd=d[np.where(d>0)].reshape(naxis2,naxis2-len(w[0]))
+                    else:
+                        dd = d
+
+                    xsum       = dd.sum(axis=1)
+                    x          = range(len(xsum))                          # same for ysum
+                    bgwhere    = np.where(dd < 1000)                       # hack for a mean value.
+                    bgestimate = dd[bgwhere].mean()
+                    mean       = bgestimate * naxis2                       # dd.mean(dd < 500).mean() ignore signal
+                    xmean      = np.array([3.0*mean]*len(x))
+                    xwhere     = np.where(xsum > xmean)
+                    xmin,xmax  = xwhere[0][0]-border,xwhere[0][-1]+border
+
+                    ysum       = dd.sum(axis=0)
+                    ywhere     = np.where(ysum > ysum.mean())
+                    ymin,ymax  = ywhere[0][0]-border,ywhere[0][-1]+border  # cosmic ray can trip this up
+
+                    trimsecs["xmin"].append(xmin)
+                    trimsecs["xmax"].append(xmax)
+                    trimsecs["ymin"].append(ymin)
+                    trimsecs["ymax"].append(ymax)
+                    if(self.options.plot):                                 # fix up for two plots side by side.
+                        from matplotlib import pyplot as plt
+                        fig, (ax1, ax2) = plt.subplots(1,2,figsize=(10,5))
+                        rangex    = range(len(xmean))
+                        ax2.plot(rangex,xsum,lw=0.5)
+                        rangex    = range(xwhere[0][0],xwhere[0][-1])
+                        ax2.plot(rangex,[xsum[xwhere[0][0]]]*len(rangex),lw=1,c='red')
+                        ax2.grid()
+                        ax2.title.set_text("X")
+                        rangey    = range(len(ysum))                       # how big is y
+                        ax1.plot(rangey,ysum,lw=0.5)                       # plot all data
+                        rangey    = range(ywhere[0][0],ywhere[0][-1])
+                        ax1.plot(rangey,[ysum[ywhere[0][0]]]*len(rangey),c='red')
+                        ax1.grid()
+                        ax1.title.set_text("Y")
+                        plt.suptitle(f"{infile} [{xmin},{xmax},{ymin},{ymax}]\nMean = {bgestimate:6.3f}, border = {border}\n ")
+                        plt.show()
+                except Exception as e:
+                    print(f"FindTrim Unexpected Error\n{e.__str__()}")
+                    raise
+        self.trimsecs = [min(trimsecs["xmin"]),
+                         max(trimsecs["xmax"]),
+                         min(trimsecs["ymin"]),
+                         max(trimsecs["ymax"])]
+        return self
+
+    ### FindTrim.findtrim()
+
+    def getsection(self):                                   # FindTrim.getsection()
+        """return the text for the section as [X:X,Y:Y]"""
+        t = self.trimsecs
+        return f"[{t[0]},{t[1]}:{t[2]},{t[3]}]"
+    ### FindTrim.getsection()
+
+   # (wg-python-properties properties)
+
+# class FindTrim
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+# HEREHEREHERE
+if __name__ == "__main__":
+    opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+    opts.add_option("-b", "--border", action="store", dest="border",
+                   default="100",
+                   help="<int>     size of border [100].")
+
+    opts.add_option("-p", "--plot", action="store_true", dest="plot",
+                   default=False,
+                   help="<bool>     make plots of ranges.")
+
+    # for small grating spectrographs, the bright zero order line 
+    # can mess with an image. This provides a way to force the
+    # artifacts like these to be ignored.
+    opts.add_option( "--minx", action="store", dest="minx",
+                   default=None,
+                   help="<int>    minx force limit. [None]")
+    opts.add_option( "--maxx", action="store", dest="maxx",
+                   default=None,
+                   help="<int>    maxx force limit. [None]")
+    opts.add_option( "--miny", action="store", dest="miny",
+                   default=None,
+                   help="<int>    miny force limit. [None]")
+    opts.add_option( "--maxy", action="store", dest="maxy",
+                   default=None,
+                   help="<int>    maxy force limit. [None]")
+
+    opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>     be verbose about work.")
+
+    (options, args) = opts.parse_args()
+
+    # (wg-python-atfiles)
+    finder=FindTrim(options,args)
+    finder.findtrim()
+    print(f"{finder.getsection()}")
+    if(options.verboseflag):
+        finder.debug()
+
+

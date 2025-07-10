@@ -1,0 +1,339 @@
+#!/bin/bash
+#set -x # set +x to turn off
+
+##############################################################################
+# asolve - use Astrometry.net to astrometrically solve plates
+#   Astrometry.net usually installs into /usr/local/astrometry/...deep
+#   The data files are interesting! I soft-link them to subsets, but combersome
+#   in multi-user environment. Takes about 10 seconds per complete solution.
+# 
+# The script takes a set of filenames from l.l (@l.l) and returns a suite of
+# solutions: csv for ds9, psql for PostgreSQL, a new file with the wcs (you
+# get to rename). A few log files.
+# 2022-05-09T08:46:41-0600 wlg Added new scripts: 
+#   1) fixheaders to
+#     convert the local file's idea of a usable RA/DEC to our hopefully unique keyword
+#     to make the hint from each file, using TARGRA and TARGDEC as the fields. 
+#   2) use the ~/bin/asolvehint -- returns a string with no carriage return
+#     containing the -3 -4 -5 based on contents of a files header. Allows
+#     inclusion on the solve-field commandline.
+##############################################################################
+# The parametric values:
+#
+# PROJECTBASE=""
+# NOSIP=""
+# VERBOSEFLAG=""
+# asolvehint=""
+# NOSIP=""
+# ancfg=""
+# timeoutvalue=30
+# PSFEXPARAM="default.sex"
+##############################################################################
+function usage() {
+   echo >&2  'asolve usage:'
+   echo >&2  '  -v  -- verbose flag, be a bit more chatty.'
+   echo >&2  '  -f  defaults the AN finder'
+   echo >&2  '  -T'
+   echo >&2  '  -b <PROJECTBASEDIR>'
+   echo >&2  '  -h  show this message '
+   echo >&2  '  all files to be solved in a file called l.l -- one per line'
+   echo >&2  '  export asolvehint="-d 25 -3 13.723079 -4 -37.684836 -5 1" for your ra/dec/size needs'
+   echo >&2  '  if an.cfg exists in this dir, then use it as the config directory.'
+   echo >&2  '  for f in `(find . -name "*fits" -exec dirname \{} \; | sort | uniq )` ;\ '
+   echo >&2  '  do echo Processing $f; (cd $f; asolve; ); done'
+   echo >&2  "  asolve [files]: the xxx.solved file will consist of a 1 or a 0"
+   echo >&2  '  solve-field --no-fits2fits --no-plot --use-extractor $*'
+   echo >&2  '  WCS changed, so redo sextractor on new file making <filename>.cat'
+   echo >&2  '  For ds9 use sex2csv to convert <filename>.cat into <filename>.tsv'
+   echo >&2  '  Appends output to the your ~/asolve.log file'
+   echo >&2  '  For silent operation, pipe results >/dev/null; asolve locally catches the log'
+   echo >&2  '  --no-fits2fits skips header compliance tests'
+   echo >&2  ''
+   echo >&2  'For a project, link ./usw to somewhere that has a hints.sh file.'
+   echo >&2  'The hints.sh carries environment variables to adjust this run'
+   echo >&2  'to the particulars of the night/instrument.'
+   echo >&2  ''
+   echo >&2  ''
+   echo >&2  ''
+
+}
+
+# look for all the support scripts we're require
+depencencies=(/usr/local/bin/sextractor /usr/local/bin/source-extractor $HOME/bin/solve-field $HOME/bin/sex2psql $HOME/bin/sex2csv $HOME/bin/anhints )
+
+sexfiles=(default.conv  default.nnw  default.param  default.sex)
+
+for f in $dependencies ; do 
+   if [ "$(which $f)" == "" ] ; then msg="$msg\nProgram files Missing $f" ; fi
+done
+
+if [ "$msg" != "" ]; then
+    echo "Resolve\n$msg"
+    exit 1
+fi
+
+for f in $sexfiles ; do
+   if [ ! -e $f ] ; then msg="$msg\nSextractor Missing $f" ; fi
+done
+
+########################### Some local variables ############################
+PROJECTBASE=""
+NOSIP=""
+VERBOSEFLAG="0"
+if [ "$asolvehint" == "" ]; then echo "asolvehint is blank"; else asolvehint=$asolvehint; fi
+NOSIP="-t 5"                    # 5-degree SIP solution
+ancfg=""
+timeoutvalue=30                 # maxtime for solve-field to run
+PSFEXPARAM="default.sex"        # parameter for 
+DRYRUN=""
+FINDER="--use-source-extractor"   # AN gets bashful!
+
+############################ Use hints if there #############################
+#myhints=`ls *hints`
+#if test -e hints; then
+#   echo "Using hints"
+#   printf 'export hints="%s"\n' "$(cat hints)" > tmpmyhints
+#   . tmpmyhints
+#fi
+
+#############################################################################
+#  Get the user options/bin/bash: jplfield: command not found
+#############################################################################
+while getopts ":Thvnbf:c:" opt ; do     # handle options
+   case $opt in
+   h)
+      usage
+      exit 1
+      ;;
+   b)
+      PROJECTBASE=${OPTARG}
+      ;;
+   f) FINDER=""
+      ;;
+   T)
+      NOSIP=""
+      ;;
+   v)
+      VERBOSEFLAG="1"
+      ;;
+   n) DRYRUN="1"
+      ;;
+   ?)
+      echo "asolve $0 Bad option"
+      usage
+      exit 1
+      ;;
+   esac
+done
+
+runlogname=$(jpldatetime).log
+
+echo `jpldatetime` > $runlogname
+
+
+##############################################################################
+# Check pre-requisites
+#    Initialize msg to a blank string.
+#    Do lots of tests, and if msg is not "" at the end then  report as many bad
+#    things that needs attention in one go then abort.
+##############################################################################
+msg=""
+
+if test ! -e default.sex   ; then msg="$msg Missing default.sex\n"  ; fi
+if test ! -e default.conv  ; then msg="$msg Missing default.conv\n" ; fi
+if test ! -e default.nnw   ; then msg="$msg Missing default.nnw\n"  ; fi
+if test ! -e default.param ; then msg="$msg Missing default.param\n"; fi
+
+if [ "$msg" != "" ]; then 
+   echo "Using default finder"
+   FINDER=""
+fi
+
+msg=""
+
+# make sure we have our list of files to solve.
+if test ! -e l.l; then
+   msg="$msg Missing l.l\n";
+fi
+
+# make sure our helper programs are installad and on the path
+
+if [ "$(which logstrip)" == ""    ]; then msg="$msg program logstrip not found on path\n"; fi
+if [ "$(which cleanlog)" == ""    ]; then msg="$msg program cleanlog not found on path\n"; fi
+if [ "$(which sextractor)"  == "" ]; then msg="$msg Missing sextractor\n";                 fi
+if [ "$(which solve-field)" == "" ]; then
+   msg="$msg$ Missing astrometry.net solve-field\nPath - $PATH\n"; 
+fi
+
+# ##############################################################################
+# # Make sure we're in the anaconda environment but not in iraf27.
+# not necessary with IRAF 2.17 and Pyraf3
+# ##############################################################################
+# if [[ "$PATH" =~ "iraf27" ]]; then
+#    tmsg="Cannot be in anaconda's iraf27 env."
+# elif [[ ! "$PATH" =~ "anaconda3" ]]; then
+#    tmsg="Need anaconda3 at least\n"
+#    msg="$msg$tmsg"
+# fi
+
+##############################################################################
+# Find solve-field from Astrometry.net's package or die.
+#   /usr/local/astrometry/bin is where the package sits, otherwise
+#   set your own path.
+##############################################################################
+
+if test "$(which solve-field)" == "" ; then
+   if test -e "/usr/local/astrometry/bin" ; then  # report and log the error
+      echo "asolve: Adding a path to solve-field ... guessing /usr/local/astrometry/bin"
+      echo "asolve: Adding a path to solve-field ... guessing /usr/local/astrometry/bin" >> $runlogname;
+      export PATH="/usr/local/astrometry/bin:$PATH"
+   else
+      msg="$msg Could not find astrometry/bin/solve-field"
+   fi
+fi
+
+##############################################################################
+# copy the tweaked up sextractor files to this directory
+# Sextractor for XYlist purposes, doesn't need to dig out vignetts etc.
+# It might fail a solition anyway. So use a vanilla defaults.param/sex
+# file. If the wcs solution succeeds , then follow on with a second
+# sextractor run to feed psfex; and follow that by psfex. This catalog
+# file is FITS, and carries both X,Y and RA/DEC and carries all
+# the rather large PSFex fields.  If the default.params does'nt
+# exist, then run a utility script called 'sexprep'.
+##############################################################################
+
+# some solve-field parameters to play with.
+if test "$units" == ""; then
+  units="--scale-units arcminwidth --scale-low 10 --scale-high 20"
+fi
+
+# hint needs:
+# -3 ra       [degrees]
+# -4 dec      [degrees]
+# -5 radius   [degrees]
+
+##############################################################################
+# an.cfg is a 'local' astrometry.net config file.
+#
+# add_path /usr/local/astrometry/data
+# index index-
+#
+##############################################################################
+if test -e an.cfg; then ancfg="--config $(/bin/pwd -P)/an.cfg"; fi
+
+#echo >&2 "finished ancfg test"
+
+# We've found as many errors as we can.
+if test "$msg" != ""; then
+  echo Exiting with errors >> $runlogname;
+  echo $msg
+  exit 1
+fi
+
+##############################################################################
+# files are in l.l
+# $asolvehint  'export asolvehint="-3 <radegrees> -4 <decdegrees> -5 <radiusdegrees>"
+# $timeoutvalue not necessary
+# $ancfg
+#
+# jpldate is a bash script with 'date +%d%b%Y'
+##############################################################################
+
+# sexprep uses PROJECTBASE to get the default files.
+if test "" == "$timeoutvalue"; then 
+   echo using default timeoutvalue of 30;  >> $runlogname;
+   timeoutvalue=30;
+fi
+echo "timeout = $timeoutvalue"  >> $runlogname;
+
+if test -e asolve.log ; then mv asolve.log $(jpldate).asolve.log; fi
+if test -e psfex-default.sex ; then
+    PSFEXPARAM="psfex-default.sex";
+else
+    PSFEXPARAM="default.sex";
+fi
+
+echo "starting the mix" >asolve.log            # start fresh log.
+
+if test "$VERBOSEFLAG" != ""; then
+   echo "   PROJECTBASE   |$PROJECTBASE|"  >> $runlogname;
+   echo "   NOSIP         |$NOSIP|"        >> $runlogname;
+   echo "   VERBOSEFLAG   |$VERBOSEFLAG|"  >> $runlogname;
+   echo "   asolvehint    |$asolvehint|"   >> $runlogname;
+   echo "   NOSIP         |$NOSIP|"        >> $runlogname;
+   echo "   ancfg         |$ancfg|"        >> $runlogname;
+   echo "   timeoutvalue  |$timeoutvalue|" >> $runlogname;
+   echo "   PSFEXPARAM    |$PSFEXPARAM|"   >> $runlogname;
+fi
+
+if [[ "$DRYRUN" != "" ]]; then 
+   echo "Dryrun requested, halting here."  >> $runlogname;
+   exit 1
+fi
+
+shopt -s nullglob                              # ignore wildcard matchs for a minute
+msg=""
+for f in $(cat l.l) ; do
+   if [[ ! "$f" =~ ".fits" ]] ; then
+         msg="$msg $f  non-fits file found\n"
+         echo >&2 "$f  non-fits file found"   >> $runlogname;
+         continue;
+   fi
+   if [[ "$msg" != "" ]]; then
+       echo "Non fits files are in the l.l file. Halting."
+       echo $msg
+       exit 1
+   #echo "Starting solution..."
+   fi
+
+   if test ! -e ${f/fits/new} ; then            # $f.new means file already solved.
+      if test "$VERBOSEFLAG" == "1"; then
+         echo "   " cfg  = "|$ancfg|"       >> $runlogname
+         echo "   " hint = "|$asolvehint|"  >> $runlogname
+      fi
+      # show and log the commands-l $timeoutvalue   $ancfg --no-plot
+      echo "Command: " solve-field $NOSIP   $FINDER $(anhints $f) $f
+      echo "Command: " solve-field $NOSIP   $FINDER $(anhints $f) $f >> $runlogname
+      #echo "Hint: $(anhints $f)"
+      # 
+      timeout $timeoutvalue solve-field $NOSIP  -l $timeoutvalue  $ancfg --no-plot  $FINDER $(anhints $f) $f > $f.log 2>&1
+      cleanlog $f.log                       # cleanlog removes stuff in the logfile.
+      rm -f $f.log
+      if test "$?" == "124" ; then echo >>asolve.log TIMEOUT ERROR $f; fi
+      for rf in *corr *axy *match ; do rm $rf; done # remove the cruft
+      if test -e test.cat ; then
+          mv test.cat ${f/.fits/.cat};
+      fi   # always remember sextractor cat files.
+      # run sextractor again, PSFEX params in play.
+      if test -e ${f/fits/solved} ; then                   # side effect - make a $f.cat file
+         echo >>asolve.log  "$f Re-running sextractor with new WCS solution"
+         sextractor ${f/fits/new} -CATALOG_NAME ${f/.fits/.cat} >>$runlogname 2>&1 ;
+         ### sextractor -c $PSFEXPARAM ${f/fits/new} -CATALOG_NAME ${f/.fits/_cat.fits} ;
+         ###  psfex ${f/.fits/_cat.fits}
+         sex2csv < ${f/.fits/.cat} >${f/.fits/.csv} -f "$f" ;   # convert catalog to a csv
+         sex2psql ${f/.fits/.cat} >${f/.fits/.psql}
+      fi
+   else
+      echo "File $f was not found or has .new already."
+   fi
+done
+
+# Strip lines with terminal control sequences ESC[1A ESC[1M etc from the log files.
+#if test -e asolve.log; then
+#   logstrip < asolve.log > tmp.log
+#   mv tmp.log asolve.log
+#else
+#   echo asolve.log missing
+#fi
+
+for f in $(cat l.l); do
+   if test ! -e ${f/fits/new}; then
+      echo >>asolve.log "$f not solved";
+      echo "$f not solved";
+   fi;
+done
+
+
+rm -f *xyls *rdls *wcs *solved *fits.log
+# rm -f *cat *csv *new *psql asolve*

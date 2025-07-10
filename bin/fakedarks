@@ -1,0 +1,483 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# (wg-astroconda-pdb)
+# (wg-python-fix-pdbrc)
+#
+#
+# (compile (format "python -m py_compile %s" (buffer-file-name)))
+# (compile (format "pydoc3 %s" (buffer-file-name)))
+#
+#############################################################################
+### HEREHEREHERE
+
+import os
+import optparse
+import sys
+import re
+import numpy as np
+import pandas as pd
+from astropy.io import fits
+
+
+__FSDEBUG = [False,True][os.getenv('FSDEBUG') == '']
+
+# to handle the Unicode filenames from Win1X
+_encoding = 'utf-8'                         # deal with nt's UTF issues.
+if(os.name == 'nt'):
+    _encoding = 'utf-16'
+# with io.open(listname,'r',encoding=_encoding) as f:
+
+# (wg-python-types)
+#############################################################################
+#
+#
+#  /home/wayne/bin/fakedarks
+# (wg-python-emacs-help)
+#
+# (wg-python-toc)
+#
+#
+#############################################################################
+
+__doc__ = """
+
+/home/wayne/bin/fakedarks
+[options] files...
+
+Designed to generate fake dark frames for use with CMOS cameras and old
+software. CMOS cameras show roughly the same mean as a zero file, but
+the variance grows with exposure time, and the offset shifts by a few
+seconds per minute of dark exposure. This program does not add in 
+'bad actors' -- pixels that wildly vary with a dark. These are pruely
+random in nature and are ignored. (May add this 'feature' at a later date.)
+
+Ideally, only the base name is needed. However, many options are added.
+you may give an example file file, from which the header is borrowed,
+values adjusted, and the fake files generated.
+
+You may enter your own header, as a json plain ascii file.
+
+Todo: May add a .csv for the header. This requires fancy dancing with
+astropy card images.
+
+Usage Examples:
+    fakedarks                                    outputfilebase.fits
+    fakedarks --example anightsfile.fits         outputfilebase.fits
+    fakedarks -x 256 -y 307 -g 102 -o 100 -m 123 outputfilebase.fits
+
+mix, match but above all REVIEW!
+
+outputfilebase.fits - the base name. Produce '-n' count of files
+with a '-<number>' append to the name.
+
+fakedarks -n 11 fake-2024-12-25T00:00:00.fits
+creates: fake-2024-12-25T00:00:00-1.fits .. 2024-12-25T00:00:00-11.fits
+
+-e --exposure  60                    default fake exposure time
+-g --gain      52                    default CMOSGAIN value
+-o --offset    7                     default CMOSOFFS value
+-m --mean      42                    known mean of a zero/bias image. Default of 12
+                                       (maybe should be offset times fudge factor)
+-n --number    11                    the number of files to produce.  [11]
+-x --naxis1    6280                  the xaxis size [6280]
+-y --naxis2    4210                  the y axis length 1 based (cardinal) [4210]
+--header       filename              a jason file with the fake header to use.
+                                       { 'keyword' : [value,comment], ... }
+-r --reference <filename.fits>       use the header from this fits file.
+--dateobs      "2024-12-25T00:00:00" default DATE-OBS time stamp to use.
+                                        each file will have a delta applied.
+
+--header       json.json             file with json for the header, not a fits file.
+--download                           download duration [5] sec.
+
+-d --debug                           dump the contents of built in defaults, do not run.
+-v --verbose                         be chatty about the work
+
+TODO: Maybe add pandas/csv for the fakeheader.
+
+CMOS sensors have roughly the same mean value as a zero-duration (bias)
+file. However, the variance goes up with the exposure. In reality the
+noise is somewhat random. The current exposure's pixel may zig to a low value,
+whilst the master dark's value has zagged to a max value. The result is
+complete chaos.
+
+Given:
+    v1 = mean(masterdark) - dark[i][j]
+    v2 = min(masterdark[j][k])
+    v3 = max(masterdark[j][k])
+The error:
+    sqrt (v1**2 + v2**2 +v3**2) > the original exposure to begin with!
+
+
+2024-12-20T13:20:11-0700
+"""
+
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+__all__     = ['','']   # list of quoted items to export
+
+dateobs_format  = '%Y-%m-%dT%H:%M:%S'
+default_dateobs = "2024-12-25T12:43:56"                   # Santa is running late
+default_dateend = "2024-12-18T02:46:26"                   # dateobs + n * (exptime download)
+##############################################################################
+# Built-in fake header
+##############################################################################
+default_header = { "SIMPLE"    :  [                     'T'  , ""                                    ],
+                   "BITPIX"    :  [                     16   , "bits per data value"                 ],
+                   "NAXIS"     :  [                      2   , "Number of data axes"                 ],
+                   "NAXIS1"    :  [                   6280   , "Length of data axis 1"               ],
+                   "NAXIS2"    :  [                   4210   , "Length of data axis 2"               ],
+                   "GAIN"      :  [                     56   , "Gain"                                ],
+                   "OFFSET"    :  [                     12   , "Offset"                              ],
+                   "ROWORDER"  :  [            'BOTTOM-UP'   , ""                                    ],
+                   "SENSOR_X"  :  [                  6280    , "Sensor width"                        ],
+                   "SENSOR_Y"  :  [                  4210    , "Sensor height"                       ],
+                   "SWCREATE"  :  [      'fakezeros-1-2-3'   , "Software used to generate this file" ],
+                   "BIN1"      :  [                      1   , "Binning on axis 1"                   ],
+                   "BIN2"      :  [                      1   , "Binning on axis 2"                   ],
+                   "DATAMAX"   :  [                  65535   , "[adu] maximum value for all pixels"  ],
+                   "DATAMIN"   :  [                      0   , "[adu] minimum value for all pixels"  ],
+                   "BSCALE"    :  [                      1   , "linear factor in scaling equation"   ],
+                   "BZERO"     :  [                  32768   , "zero point in scaling equation"      ],
+                   "DATE-OBS"  :  [  '2024-12-18T02:43:26'   , "Date of observation start"           ],
+                   "DATE-END"  :  [  '2024-12-18T02:46:26'   , "Date of observation end"             ],
+                   "JD-OBS"    :  [           2460662.6135   , "JD start observation"                ],
+                   "JD-MID"    :  [           2460662.6145   , "JD mid observation"                  ],
+                   "EXPTIME"   :  [                    180   , "[s] Total observation duration"      ],
+                   "CCD-TEMP"  :  [                 -10.00   , "[deg] Camera sensor temperature"     ],
+                   "END"       :  [                     ""   , ""                                    ]
+                 }
+
+example_data = """
+ Dark_180s_20241210_234803m0.fits  26438800     50.41     236.4        0.    65535.
+ Dark_180s_20241210_234803m1.fits  26438800     50.38      236.        0.    65535.
+ Dark_180s_20241210_234803m10.fits 26438800     50.41     235.8        0.    65535.
+ Dark_180s_20241210_234803m2.fits  26438800     50.38     236.2        0.    65535.
+ Dark_180s_20241210_234803m3.fits  26438800     50.35     236.4        0.    65535.
+ Dark_180s_20241210_234803m4.fits  26438800     50.35     236.3        0.    65535.
+ Dark_180s_20241210_234803m5.fits  26438800     50.35     235.9        0.    65535.
+ Dark_180s_20241210_234803m6.fits  26438800     50.39     236.9        0.    65535.
+ Dark_180s_20241210_234803m7.fits  26438800     50.38     235.4        0.    65535.
+ Dark_180s_20241210_234803m8.fits  26438800     50.39     236.2        0.    65535.
+ Dark_180s_20241210_234803m9.fits  26438800     50.41     236.2        0.    65535.
+ Dark_60s_20241210_231946m0.fits   26438800     45.97     143.5        0.    65535.
+ Dark_60s_20241210_231946m1.fits   26438800     45.82      142.        0.    65535.
+ Dark_60s_20241210_231946m10.fits  26438800     46.42     141.6        0.    65535.
+ Dark_60s_20241210_231946m2.fits   26438800     45.86      143.        0.    65535.
+ Dark_60s_20241210_231946m3.fits   26438800     45.84     141.9        0.    65535.
+ Dark_60s_20241210_231946m4.fits   26438800     45.83     142.1        0.    65535.
+ Dark_60s_20241210_231946m5.fits   26438800     45.85     142.4        0.    65535.
+ Dark_60s_20241210_231946m6.fits   26438800     46.11     141.6        0.    65535.
+ Dark_60s_20241210_231946m7.fits   26438800     47.34      142.        0.    65535.
+ Dark_60s_20241210_231946m8.fits   26438800     46.25     141.7        0.    65535.
+ Dark_60s_20241210_231946m9.fits   26438800     46.42     141.2        0.    65535.
+ Bias_0s_20241210_231820m0.fits    26438800     42.83     10.14        0.      391.
+ Bias_0s_20241210_231820m1.fits    26438800     42.84     10.14        0.      402.
+ Bias_0s_20241210_231820m10.fits   26438800     42.87     10.13        0.      402.
+ Bias_0s_20241210_231820m2.fits    26438800     42.86     10.15        0.      341.
+ Bias_0s_20241210_231820m3.fits    26438800     42.87     10.14        0.      372.
+ Bias_0s_20241210_231820m4.fits    26438800     42.87     10.14        0.      348.
+ Bias_0s_20241210_231820m5.fits    26438800     42.86     10.15        0.      404.
+ Bias_0s_20241210_231820m6.fits    26438800     42.87     10.14        0.      396.
+ Bias_0s_20241210_231820m7.fits    26438800     42.87     10.15        0.      335.
+ Bias_0s_20241210_231820m8.fits    26438800     42.87     10.14        0.      314.
+ Bias_0s_20241210_231820m9.fits    26438800     42.85     10.15        0.      332.
+"""
+
+# collected example values. -10C
+bias_mean     = np.array([ 42.83 ,42.84 ,42.87 ,42.86 ,42.87 ,
+                           42.87 ,42.86 ,42.87 ,42.87 ,42.87 ,42.85])
+bias_std      = np.array([ 10.14, 10.14, 10.13, 10.15, 10.14, 10.14,
+                           10.15, 10.14, 10.15, 10.14, 10.15])
+
+dark60_mean   = np.array([ 45.97, 45.82, 46.42, 45.86, 45.84, 45.83,
+                           45.85, 46.11, 47.34, 46.25, 46.42])
+dark60_std    = np.array([ 143.5 , 142., 141.6, 143., 141.9  ,
+                           142.1 , 142.4, 141.6, 142., 141.7, 141.2])
+
+dark180_mean  = np.array([50.41, 50.38, 50.41, 50.38, 50.35, 50.35,
+                          50.35, 50.39, 50.38, 50.39, 50.41])
+dark180_std   = np.array([236.4, 236., 235.8, 236.2, 236.4, 236.3,
+                          235.9, 236.9, 235.4, 236.2, 236.2 ])
+
+##############################################################################
+# FakeDarkException
+#
+##############################################################################
+class FakeDarkException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(FakeDarkException,self).__init__("FakeDark "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return f" FakeDark: {e.__str__()}\n"
+# FakeDarkException
+
+
+##############################################################################
+# FakeDark
+#
+##############################################################################
+class FakeDark(object):
+    """ Create a 2D fake dark with statistics.
+            darkname      : str        = 'fakedark',
+            naxix1        : int        = 6280,                          
+            naxis2        : int        = 4210,                          
+            mean          : float      = 100.0,                         
+            std           : float      = 23.0,                          
+            exptime       : float      = 60.0,                          
+            dateobs       : str        = '2024-12-22T01:23:45',         
+            sequence      : int        = 1,                             
+            cmosgain      : int        = 56,                            
+            cmosoffs      : int        = 7,                             
+            readdelay     : float      = 2.3,                           
+            exampleimage  : np.ndarray = None,                          
+            exampleheader : dict       = None):                         
+
+    Require NAXIS1,NAXIS2
+            DATE-OBS, EXPTIME,
+    Default CMOSGAIN, CMOSOFFS, BINX, BINY
+    Optional mean, std overides.
+    Need some keywords
+    Allow header to be supplied (default is basic header).
+    Allow a collection of bad pixels.
+    """
+    #__slots__ = [''] # add legal instance variables
+    # (setq properties `("" ""))                            
+    def __init__(self, darkname      : str = 'fakedark',    # FakeDark::__init__()
+                       naxix1        : int        = 6280,
+                       naxis2        : int        = 4210,
+                       mean          : float      = 100.0,
+                       std           : float      = 23.0,
+                       exptime       : float      = 60.0,
+                       dateobs       : str        = '2024-12-22T01:23:45',
+                       sequence      : int        = 1,
+                       cmosgain      : int        = 56,
+                       cmosoffs      : int        = 7,
+                       readdelay     : float      = 2.3,
+                       exampleimage  : np.ndarray = None,
+                       exampleheader : dict       = None):
+        """Manage complexities to make a 'fake' dark frame for later processing."""
+        #super().__init__()
+        # (wg-python-property-variables)
+        self.filename        = filename     
+        self.filename        = filename     
+        self.naxix1          = naxix1       
+        self.naxis2          = naxis2       
+        self.mean            = mean         
+        self.std             = std          
+        self.exptime         = exptime      
+        self.dateobs         = dateobs      
+        self.sequence        = sequence     
+        self.readdelay       = readdelay    
+        self.exampleimage    = exampleimage 
+        self.exampleheader   = exampleheader
+    ### FakeDark.__init__()
+
+    dec __iter__(self) -> iterator[FakeDark]
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # FakeDark::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("FakeDark - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print(f'{key:20s} =',file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+
+    ### FakeDark.debug()
+
+    __FakeDark_debug = debug  # really preserve our debug name if we're inherited
+
+   # (wg-python-properties properties)
+
+# class FakeDark
+
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+# HEREHEREHERE
+if __name__ == "__main__":
+    opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+    opts.add_option("-x", "--naxis1", action="store", dest="naxis1",
+                   default='6280',
+                   help="<bool>     width (naxix1) of the chip [cardinal 6280].")
+
+    opts.add_option("-y", "--naxis2", action="store", dest="naxis2",
+                   default='4210',
+                   help="<bool>     height (naxix2) of the chip [cardinal 4210].")
+
+    opts.add_option("-e", "--exposure", action="store", dest="exposure",
+                   default='60',
+                   help="<bool>     exposure time [60].")
+
+    opts.add_option("-g", "--gain", action="store", dest="gain",
+                   default='56',
+                   help="<bool>     CMOSGAIN  [56].")
+
+    opts.add_option("-o", "--offset", action="store", dest="offset",
+                   default=7,
+                   help="<bool>     CMOSOFFS  [7].")
+
+    opts.add_option("-m", "--mean", action="store", dest="mean",
+                   default='42',
+                   help="<bool>     mean of the dark [12].")
+
+    opts.add_option("-n", "--number", action="store", dest="number",
+                   default='60',
+                   help="<bool>     exposure time [60].")
+
+    opts.add_option("--dateobs", action="store", dest="dateobs",
+                   default=default_dateobs,
+                   help="<string>   filename with json image of header.")
+
+    opts.add_option("--reference", action="store", dest="example",
+                   default='file.fits',
+                   help="<str>      name of example fits file for header [file.fits].")
+
+    opts.add_option("--header", action="store", dest="headerfile",
+                   default='fakeheader.json',
+                   help="<string>   filename with json image of header.")
+
+    opts.add_option("--download", action="store", dest="download",
+                   default='5',
+                   help="<float>   time [sec] camera takes to download.")
+
+    opts.add_option("-d", "--debug", action="store_true", dest="debug",
+                   default=False,
+                   help="<bool>     height of the chip [cardinal].")
+
+    opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>     be verbose about work.")
+
+    (options, args) = opts.parse_args()
+
+    ##################################################################
+    #  Grab, process and perform basic checks on input parameters.
+    #  Try to process as much as possible for exiting.
+    ##################################################################
+    errmsg             = []                                       # accumulate errors stop before
+    header             = None                                     # we do anything to change filesystem
+    necessary_keywords = set(("NAXIS2","DATE-OBS","DATE-END","EXPTIME"))
+    try:
+        msg = "naxis1"      ; naxis1       = int(options.naxis1)   # msg for option that may
+        msg = "naxis2"      ; naxis2       = int(options.naxis2)   # blow up, then attemp
+        msg = "debug"       ; debug        = options.debug         # conversion
+        msg = "mean"        ; mean         = float(options.mean)
+        msg = "exposure"    ; exposure     = int(options.exposure)
+        msg = "headerfile"  ; headerfile   = options.headerfile
+        msg = "dateobs"     ; dateobs      = options(dateobs)
+        msg = "number"      ; number       = int(options.number)
+        msg = "download"    ; download     = float(options.download)
+        msg = "verboseflag" ; verboseflag  = options.verboseflag
+    except Exception as e:
+        usagemsg = usage+'\n'+__doc__
+        errmsg.append(f"""Bad value for {msg}. {usagemsg}""")
+        if(verboseflag):
+            raise(Exception(errmsg))
+        sys.exit(1)
+
+    ofile = argv[0]                                       # should be only thing left
+    if('fits' not in ofile):
+        errmsg.append(f"Expected fitsfile name template, found{ofile}")
+    else:
+        oname = ofile.split('.fit')[0]
+
+    ##################################################################
+    #  Get the fake header loaded and in order.
+    ##################################################################
+    if(headerfile is None):
+        if(example is not None):                          # use the representative example
+            try:
+                with fits.open(example) as f:
+                    header = f[0].header
+                    if(necessary_keywords != set(header.keys())):  # all necessary present test
+                        errmsg.append(f"""Missing one of the necessary keywords {necessary_keywords}""")
+                        if(debug):
+                            raise(exception(errmsg))
+                        sys.exit(1)
+                    else:
+                        dateobs  = h["DATE-OBS"]          # Pick up critical values from
+                        naxis1   = h["NAXIS1"]            # example header.
+                        naxis2   = h["NAXIS2"]
+                        exposure = h["EXPTIME"]
+            except Exception as e:
+                errmsg.append(f"header file {headerfile} bad.")
+                if(verboseflag):
+                    msg   = '\n'.join(errmsg)
+                    raise Exception(f"""{e.__str__}\n{msg}""")
+        else:
+            errmsg.append(f"""Missing headerfile and example.""")
+            if(debug):
+                raise Example(errmsg)
+            sys.exit(1)
+    else:
+        try:
+            msg    = "opening header file {headerfile}"
+            with open(headerfile) as f:
+                headerjson = f.read()
+            msg    = "converting header file contents."
+            header = json.loads(headerjson)
+        except Exception as e:
+            errmsg.append(f"{msg}")
+            print(f"""fakedarks: error {msg}.""",file=sys.stderr)
+            if(debug):
+                raise(Exception(msg))
+        sys.exit(1)
+
+    # Stop here, and report one or more errors.
+    if(len(errmsg) != 0):
+        msg = '\n'.join(errmsg)
+        print(msg,file=sys.stderr)
+        if(verboseflag):
+            raise Exception(msg)
+        sys.exit(1)
+
+    try:
+        ##################################################################
+        #  Handle the header. If dateobs is a parameter, then prepare and
+        #  use it. If not, fall back to the fakeheader's stated values.
+        ##################################################################
+        exptimedelta = timedelta(exptime)
+        startdate    = datetime.datetime.strptime(dateobs_format,dateobs)
+        enddate      = datetime.datetime.strptime(dateobs_format,startdate + exptimedelta)
+        if('DATE-OBS' in header and 'DATE-END' in header):
+            header['DATE-OBS'] = startdate
+            header['DATE-END'] = enddate
+        else:
+            errmag.append("""fakedarks: fakeheader Missing one of 'DATE-OBS' or 'DATE-END'""")
+
+        ##################################################################
+        #  Now, generate the count files.
+        ##################################################################
+        fakedata = np.ones((naxis2,naxix1),dtype='>i2')              # numpy is (Y,Z) fits is (X,Y)
+        gain     = header.get('GAIN',   options.gain)                # use header, fallback to params
+        offset   = header.get('OFFSET', options.offset)
+        ones     = np.ones((naxix2,naxix1))                          # make base image
+        for n in count:
+            variance = np.random.rand(*ones.shape)                   # get random 0..1 values
+            d        = ones * variance + offset + (exposure * 7.2)   # grow with exposure time.
+            h        = fits.PrimaryHDU(header,data=d)                # start a file
+            h.writeto(f"{ofile}-{n:d}",output_verify='fix',overwrite=True)
+    except Exception as e:
+        errmsg.append(f"main failure, {msg}")
+        msg = '\n'.join(errmsg)
+        print(msg,file=stderr)
+        if(verboseflag):
+            raise Exception(msg)
+    sys.exit(0)
+
+

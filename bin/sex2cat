@@ -1,0 +1,74 @@
+#!/usr/bin/env python
+
+#############################################################################
+# 
+#  /opt/io/wayne/clones/ASTR3510_Fall_2017/Lab2/10Oct2015/M15/PreAnalysis/sex2cat
+# (find-file-other-frame "./.pdbrc")
+# (wg-ureka-pdb)
+# (wg-astroconda-pdb)
+#
+# emacs helpers (set-background-color "light blue")
+# (wg-python-toc)
+#               
+#############################################################################
+import optparse
+import re
+import sys
+
+__doc__ = """
+
+sex2cat [options] files...
+
+For each file, make <filebasename>.csv -- using commas.
+
+
+
+"""
+
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+
+if __name__ == "__main__":
+   opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+   opts.add_option("-f", "--filename", action="store", dest="filename",
+                   default="",
+                   help="<filename>     add a filename column to end")
+
+   opts.add_option("-r", "--noheaders", action="store_true", dest="noheaders",
+                   default=False,
+                   help="<bool>     only one header for sex2cat >> file.")
+
+   opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>     be verbose about work.")
+
+   (options, args) = opts.parse_args()
+
+   filename = ''
+   column_names = []
+   if(options.filename):
+      filename = f",'{options.filename}'"
+
+   for l in sys.stdin:
+      if('#' in l):
+         parts = list(map(str.strip,l.split()))
+         column_names.append(parts[2])
+         continue
+      break
+   if(options.noheaders is False):
+      print(','.join(column_names)+filename)
+
+   for l in sys.stdin:
+      parts = map(str.strip,l.split())
+      print (",".join(parts))
+
+
+
+

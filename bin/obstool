@@ -1,0 +1,735 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# (wg-astroconda-pdb)
+# (wg-python-fix-pdbrc)
+#
+#
+# (compile (format "python -m py_compile %s" (buffer-file-name)))
+# (compile (format "pydoc3 %s" (buffer-file-name)))
+#
+#############################################################################
+### HEREHEREHERE
+
+import os
+import optparse
+import sys
+import re
+import numpy                  as np
+import pandas                 as pd
+from   astropy.io             import fits
+from   astropy.table          import Table
+from   matplotlib.projections import get_projection_names   # atioff display?
+
+import datetime
+import pytz
+
+import astropy.units          as u
+from   astropy.time           import Time
+from   astropy.coordinates    import SkyCoord
+from   astropy.coordinates    import EarthLocation
+from   astroplan              import FixedTarget
+from   astroplan              import Observer
+
+from   astropy.samp           import SAMPIntegratedClient
+
+# to handle the Unicode filenames from Win1X
+_encoding = 'utf-8'                         # deal with nt's UTF issues.
+if(os.name == 'nt'):
+    _encoding = 'utf-16'
+
+#############################################################################
+#
+#
+#  /home/wayne/bin/obstool
+# (wg-python-emacs-help)
+#
+# (wg-python-toc)
+#
+# __doc__ = """
+# __author__  = 'Wayne Green'
+# __version__ = '0.1'
+# __all__     = ['TargetList', 'TargetListException',
+# def mpersec_to_milesperhour(speedmps):
+# class TargetListException(Exception):
+#     def __init__(self,message,errors=None):
+#     @staticmethod
+#     def __format__(e):
+# class TargetList(object):
+#     #__slots__ = [''] # add legal instance variables
+#     def __init__(self,targetfilename: str,                  # TargetList::__init__()1
+#     def debug(self,msg="",skip=[],os=sys.stderr):           # TargetList::debug()
+#     def load(self,filename):                                # TargetList::load()
+# class TargetException(Exception):
+#     def __init__(self,message,errors=None):
+#     @staticmethod
+#     def __format__(e):
+# class Target(object):
+#     #__slots__ = [''] # add legal instance variables
+#     def __init__(self,                                      # Target::__init__()
+#     def debug(self,msg="",skip=[],os=sys.stderr):           # Target::debug()
+# class SiteException(Exception):
+#     def __init__(self,message,errors=None):
+#     @staticmethod
+#     def __format__(e):
+# class Site(object):
+#     #__slots__ = [''] # add legal instance variables
+#     def __init__(self,                                      # Site::__init__()
+#     def debug(self,msg="",skip=[],os=sys.stderr):           # Site::debug()
+#     def vector(self,time=None):                             # Site::vector()
+# class SiteListException(Exception):
+#     def __init__(self,message,errors=None):
+#     @staticmethod
+#     def __format__(e):
+# class SiteList(object):
+#     #__slots__ = [''] # add legal instance variables
+#     def __init__(self):                               # SiteList::__init__()
+#     def debug(self,msg="",skip=[],os=sys.stderr):           # SiteList::debug()
+#     @staticmember
+#     def checkdecimal(x):                                    # SiteList::checkdecimal()
+#     def load(self,filename):                                # SiteList::load()
+# class HackException(Exception):
+#     def __init__(self,message,errors=None):
+#     @staticmethod
+#     def __format__(e):
+# class Hack(object):
+#     #__slots__ = [''] # add legal instance variables
+#     def __init__(self,site : Site, targ):                   # Hack::__init__()
+#     def get_time(self,   # Hack.get_time()
+#     def print_times(ra_decimal, dec_decimal, dt_now):       # Hack.print_times()
+#     def debug(self,msg="",skip=[],os=sys.stderr):           # Hack::debug()
+# if __name__ == "__main__":
+#
+#
+#
+#############################################################################
+
+__doc__ = """
+
+/home/wayne/bin/obstool
+[options] files...
+
+Using now() for the time,
+a list of targets
+one (current) site
+
+Moon Distance to target and comp stars
+
+1 : many target compstar (display shows airmass, and distances)
+
+Parallactic Angle.
+
+"""
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+__all__     = ['TargetList',   'TargetListException',
+                'Target',      'TargetException',
+                'Site',        'SiteException'
+                'SiteList',    'SiteListException',
+                'Hack',        'HackException',
+                'SAMPClient',  'SAMPClientException',
+                'SampReceiver','SampRecieverException'
+                'mpersec_to_milesperhour',
+               ]   # list of quoted items to export
+
+
+##############################################################################
+# mpersec_to_milesperhour
+#   Hack meters per second to mile per hour for international wind reports.
+##############################################################################
+def mpersec_to_milesperhour(speedmps):
+    """Convert meters per second to miles per hour.
+    El Sauce reports in MPS.
+    """
+    return speedmps*2.23694
+# mpersec_to_milesperhour
+
+##############################################################################
+# SAMPClientException
+#
+##############################################################################
+class SAMPClientException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(SAMPClientException,self).__init__("SAMPClient "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return f" SAMPClient: {e.__str__()}\n"
+# SAMPClientException
+
+##############################################################################
+# SAMPClient
+#
+##############################################################################
+class SAMPClient(object):
+    """ Create an instance of a SAMP client.
+    """
+    #__slots__ = [''] # add legal instance variables
+    # (setq properties `("" ""))
+    def __init__(self):                                     # SAMPClient::__init__()
+        """Initialize this class."""
+        #super().__init__()
+        # (wg-python-property-variables)
+        self.client       = SAMPIntegratedClient()
+        self.client.connect()
+        self.received     = False
+        self.params       = None                        # {'url'}
+        self.client.bind_receive_call("table.load.votable",         self.receive_call)
+        self.client.bind_receive_notification("table.load.votable", self.receive_notification)
+    ### SAMPClient.__init__()
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # SAMPClient::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("SAMPClient - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print(f'{key:20s} =',file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+
+    ### SAMPClient.debug()
+
+    __SAMPClient_debug = debug  # really preserve our debug name if we're inherited
+
+   # (wg-python-properties properties)
+
+    def receive_call(self, private_key, sender_id, msg_id, mtype, params, extra):  # SAMPClient.receive_call()
+        """Callback"""
+        self.params = params
+        self.client.reply(msg_id, {"samp.status": "samp.ok", "samp.result": {}})
+
+    ### SAMPClient.receive_call()
+
+    def receive_notification(self, private_key, sender_id, mtype, params, extra): # SAMPClient.receive_notification()
+        """callback for when notifications are recieved"""
+        self.params   = params
+        self.received = True
+
+    ### SAMPClient.receive_notification()
+
+    def get_table(self):                                    # SAMPClient.get_table()
+        """Get a table."""
+        ret = None
+        if(self.recieved):
+            ret = self.table = Table.read(r.params['url'])
+        return ret
+
+    ### SAMPClient.get_table()
+
+    def send_table(self):                                   # SAMPClient.send_table()
+        """send a table."""
+        pass
+
+    ### SAMPClient.send_table()
+
+    def close(self):                                        # SAMPClient.close()
+        """Finished here."""
+        self.client.disconnect()
+        self.client = None
+        return self
+    ### SAMPClient.close()
+
+# class SAMPClient
+
+
+##############################################################################
+# SampRecieverException
+#
+##############################################################################
+class SampRecieverException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(SampRecieverException,self).__init__("SampReciever "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return f" SampReciever: {e.__str__()}\n"
+# SampRecieverException
+
+##############################################################################
+# SampReceiver  - Standalone class - example
+#
+##############################################################################
+class SampReceiver:
+    def __init__(self, client):
+        self.client = client
+        self.received = False
+    def receive_call(self, private_key, sender_id, msg_id, mtype, params, extra):
+        self.params = params
+        self.received = True
+        self.client.reply(msg_id, {"samp.status": "samp.ok", "samp.result": {}})
+    def receive_notification(self, private_key, sender_id, mtype, params, extra):
+        self.params = params
+        self.received = True
+    def debug(self,msg="",skip=[],os=sys.stderr):           # SampReciever::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("SampReciever - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print(f'{key:20s} =',file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+
+    ### SampReciever.debug()
+
+##############################################################################
+# TargetListException
+#
+##############################################################################
+class TargetListException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(TargetListException,self).__init__("TargetList "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return f" TargetList: {e.__str__()}\n"
+# TargetListException
+
+##############################################################################
+# TargetList
+#
+##############################################################################
+class TargetList(object):
+    """ Load a target list from sources:
+    currently Pandas csv files.
+    TODO add PostgreSQL load.
+    CSV files have their own headers, supply a concordance for our terms
+       them : us
+      { ""  : 'ora'
+        ""  : 'odec'
+        ""  : 'main_id'
+        ""  : 'sptype'
+      }
+    """
+    #__slots__ = [''] # add legal instance variables
+    # (setq properties `("" ""))
+    def __init__(self,targetfilename: str,                  # TargetList::__init__()1
+                      reffilename: str):
+        """targetfilename has the targetfiles,
+        reffilename has a collection of reference filenames."
+        The trick is to get the best reference tied to the target
+        given Earth rotation
+        """
+        #super().__init__()
+        # (wg-python-property-variables)
+        self.df = None
+        self.targetfilename = targetfilename   # source file names
+        self.reference      = reffilename
+        self.targetlist = {}                              # collection of targets
+        self.reflist    = {}                              # collection of reference stars
+    ### TargetList.__init__()
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # TargetList::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("TargetList - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print(f'{key:20s} =',file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+
+    ### TargetList.debug()
+
+    def load(self,filename):                                # TargetList::load()
+        """Use pandas to load filename, and generate a collection
+        of Target instances.
+        """
+        self.df = pd.read_csv(filename,comment='#',delimiter=',')
+    ### TargetList.pandasload()
+
+# class TargetList
+
+##############################################################################
+# TargetException
+#
+##############################################################################
+class TargetException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(TargetException,self).__init__("Target "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return f" Target: {e.__str__()}\n"
+# TargetException
+
+##############################################################################
+# Target
+#
+##############################################################################
+class Target(object):
+    """ The Target manage the basics for a target:
+    PROGRAMNAME  -- name for the observing program.
+    RA           -- ra in degrees
+    DEC          -- declination in degrees
+    VMag         -- crude exposure guess
+    SIMBADNAME   -- Drag main_id text for ease of interface to simbad.
+    """
+    #__slots__ = [''] # add legal instance variables
+    # (setq properties `("" ""))
+    def __init__(self,                                      # Target::__init__()
+                 name  : str,                             # program name of the star
+                 ra    :float,                            # right ascension in decimal degrees
+                 dec   :float,                            # declination in degrees
+                 vmag  :float,                            # vmag for reference
+                 simbadname : str = None
+                ):
+        """Initialize this class."""
+        #super().__init__()
+        # (wg-python-property-variables)
+        self.ra           = ra
+        self.dec          = dec
+        self.vmag         = vmag
+        self.name         = name
+        self.simbadname   = simbadname
+    ### Target.__init__()
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # Target::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("Target - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print(f'{key:20s} =',file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+
+    ### Target.debug()
+
+# class Target
+
+##############################################################################
+# SiteException
+#
+##############################################################################
+class SiteException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(SiteException,self).__init__("Site "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return f" Site: {e.__str__()}\n"
+# SiteException
+
+##############################################################################
+# Site
+#   site = Site('gao', 40.0396, -105.19945, 1333, -6)
+##############################################################################
+class Site(object):
+    """ Mange details of site.
+    NAME                         -- String, name of the site.
+    OBSGEO-B / Latitude          -- degrees
+    OBSGEO-L / Longitude         -- degrees
+    OBSGEO-H / Altitude          -- degrees
+    GMTOFFSET                    -- Hours
+
+    This structure reflects information held in the iraf/noao/lib/obsdb.dat
+    file within IRAF.
+    """
+    #__slots__ = [''] # add legal instance variables
+    # (setq properties `("" ""))
+    def __init__(self,                                      # Site::__init__()
+                 name      : str,              # Name of the site
+                 latitude  : float,            # latitude in degrees
+                 longitude : float,            # longitude in degrees
+                 altitude  : float,            # altitude in meters
+                 gmtoffset : float             # conversion GMT to local time in decimal hours
+                ):
+        """Initialize this class."""
+        #super().__init__()
+        # (wg-python-property-variables)
+        self.name         = name               # Name of the site
+        self.latitude     = latitude           # latitude in degrees
+        self.longitude    = longitude          # longitude in degrees
+        self.altitude     = altitude           # altitude in meters
+        self.gmtoffset    = gmtoffset          # signed conversion GMT to local time
+        self.location     = EarthLocation(lat=self.latitude*u.deg, lon=self.longitude*u.deg, height=self.altitude*u.m)
+        self.observer     = Observer(location=self.location, name=self.name, timezone='utc')
+
+    ### Site.__init__()
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # Site::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("Site - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print(f'{key:20s} =',file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+    ### Site.debug()
+
+    def vector(self,time=None):                             # Site::vector()
+        """Return a spatial vector."""
+        raise SiteException("Site::Vector - unimplemented.")
+
+    ### "Site.Vector()
+
+# class Site
+
+
+##############################################################################
+# SiteListException
+#
+##############################################################################
+class SiteListException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(SiteListException,self).__init__("SiteList "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return f" SiteList: {e.__str__()}\n"
+# SiteListException
+
+
+##############################################################################
+# SiteList
+#
+##############################################################################
+class SiteList(object):
+    """ Manage a list of sites. In an program, there may be multiple sites
+    contributing data. Manage a list of these sites.
+    """
+    #__slots__ = [''] # add legal instance variables
+    # (setq properties `("" ""))
+    def __init__(self):                               # SiteList::__init__()
+        """Initialize this class."""
+        #super().__init__()
+        # (wg-python-property-variables)
+
+    ### SiteList.__init__()
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # SiteList::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("SiteList - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print(f'{key:20s} =',file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+
+    ### SiteList.debug()
+
+    @staticmethod
+    def checkdecimal(x):                                    # SiteList::checkdecimal()
+        """A filter for the Pandas apply method, test data in a column.
+        Make sure that X is a decimal representation of degrees
+        There is distinct probablility somebody will use sexigesimal.
+        """
+        ret = None
+        if(type(x) in {type(1),type(1.1)}):
+            ret = x
+        else:
+            try:
+               ret = float(x)                             # go ahead and convert
+            except:
+               raise SiteListException("column value is not decimal. Sexigesimal is not permitted.")
+        return ret
+
+    ### SiteList.checkdecimal()
+
+    def load(self,filename):                                # SiteList::load()
+        """Use pandas to load filename, and generate a collection
+        of Site instances.
+        """
+        self.df = pd.read_csv(filename,comment='#',delimiter=',')
+        try:
+            msg = 'Latitude'
+            self.df[1] = self.df[1].apply(SiteList.checkdecimal)   # check for decimal lat/long
+            msg = 'Longitude'
+            self.df[2] = self.df[2].apply(SiteList.checkdecimal)
+        except Exception as e:
+            raise (f"Sitelist load: Column {msg} has errors. {e}")
+        # columns, in order, should be name, lat, long, altitude, simbdadname
+        # do not tolerate sexigesimal.
+    ### SiteList.pandasload()
+
+# class SiteList
+
+##############################################################################
+# HackException
+#
+##############################################################################
+class HackException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(HackException,self).__init__("Hack "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return f" Hack: {e.__str__()}\n"
+# HackException
+
+##############################################################################
+# Hack
+#  Site
+#  List of targets
+##############################################################################
+class Hack(object):
+    """
+    """
+    #__slots__ = [''] # add legal instance variables
+    # (setq properties `("" ""))
+    def __init__(self,site : Site, targ):                   # Hack::__init__()
+        """Initialize this class."""
+        #super().__init__()
+        # (wg-python-property-variables)
+        self.longitude          = site.longitude
+        self.latitude           = site.latitude
+        self.altitude           = site.altitude
+        self.solar_depression   = 'astronomical'         # not used yet
+        self.sidreal_time_type  = 'apparent'   # not used yet
+        self.lowest_altitude    = 33
+        self.utc                = pytz.UTC
+        self.location           = EarthLocation(lat=latitude*u.deg, lon=longitude*u.deg, height=altitude*u.m)
+        self.observer           = Observer(location=location, name='observer', timezone='utc')
+        self.targ               = FixedTarget(coord=SkyCoord(ra=ra_decimal * u.deg, dec=dec_decimal * u.deg))
+    ### Hack.__init__()
+
+    def get_time(self,   # Hack.get_time()
+                 rise_set_meridian,
+                 precision,
+                 dt_now):
+        """ get rise/set/meridian time """
+        time = Time(dt_now)
+        try:
+            rise_time             = observer.target_rise_time(time, self.targ, which="next",
+                                        horizon=lowest_altitude * u.deg, n_grid_points=precision)
+            meridian_transit_time = observer.target_meridian_transit_time(rise_time,
+                                                                     self.targ, which="next", n_grid_points=precision)
+            set_time              = observer.target_set_time(meridian_transit_time,
+                                                        self.targ, which="next", horizon=lowest_altitude * u.deg,
+                                                        n_grid_points=precision)
+            if( rise_set_meridian == 'rise'):
+                t = rise_time
+            elif( rise_set_meridian == 'meridian'):
+                t = meridian_transit_time
+            elif( rise_set_meridian == 'set'):
+                t = set_time
+        except ValueError:
+            print('Target never rises so no rise, set or meridian ' + str(dt_now))
+        except TypeError:
+            print('Gridpoint error ' + str(dt_now))
+        return t.iso
+    ### Hack.get_time()
+
+    def print_times(ra_decimal, dec_decimal, dt_now):       # Hack.print_times()
+        """ print times """
+        # create skycoord object for our target
+        rise_10       = self.get_time('rise',     10,     self.targ, dt_now)
+        rise_20       = self.get_time('rise',     20,     self.targ, dt_now)
+        rise_50       = self.get_time('rise',     50,     self.targ, dt_now)
+        rise_150      = self.get_time('rise',     150,    self.targ, dt_now)
+        rise_1000     = self.get_time('rise',     1000,   self.targ, dt_now)
+
+        meridian_10   = self.get_time('meridian', 10,     self.targ, dt_now)
+        meridian_20   = self.get_time('meridian', 20,     self.targ, dt_now)
+        meridian_50   = self.get_time('meridian', 50,     self.targ, dt_now)
+        meridian_150  = self.get_time('meridian', 150,    self.targ, dt_now)
+        meridian_1000 = self.get_time('meridian', 1000,   self.targ, dt_now)
+
+        set_10        = self.get_time('set',      10,     self.targ, dt_now)
+        set_20        = self.get_time('set',      20,     self.targ, dt_now)
+        set_50        = self.get_time('set',      50,     self.targ, dt_now)
+        set_150       = self.get_time('set',      150,    self.targ, dt_now)
+        set_1000      = self.get_time('set',      1000,   self.targ, dt_now)
+
+        print('10'   .ljust(11) + str(rise_10).ljust(26)   + str(meridian_10).ljust(26)   + str(set_10).ljust(26))
+        print('20'   .ljust(11) + str(rise_20).ljust(26)   + str(meridian_20).ljust(26)   + str(set_20).ljust(26))
+        print('50'   .ljust(11) + str(rise_50).ljust(26)   + str(meridian_50).ljust(26)   + str(set_50).ljust(26))
+        print('150'  .ljust(11) + str(rise_150).ljust(26)  + str(meridian_150).ljust(26)  + str(set_150).ljust(26))
+        print('1000' .ljust(11) + str(rise_1000).ljust(26) + str(meridian_1000).ljust(26) + str(set_1000).ljust(26))
+
+        dt = datetime.datetime.strptime("2020-01-01 00:00:00", "%Y-%m-%d %H:%M:%S").astimezone(utc)
+
+        print('--------------------------------------------------------------------------------------')
+        print('PRECISION'.ljust(11) + 'RISE'.ljust(26) + 'SET'.ljust(26) + 'MERIDIAN'.ljust(26))
+        print('--------------------------------------------------------------------------------------')
+
+        # check the rise/meridian/set times as a function of DEC
+        for n in range(5,90,10):  # increment DEC from 5-85 using steps of 10
+            print('(RA: ' + str(ra) + '  DEC: ' + str(n) + '  DATETIME: ' + str(dt) + ')')
+            print_times(ra, n, dt)
+            print('--------------------------------------------------------------------------------------')
+
+    ### Hack.print_times()
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # Hack::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("Target - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print(f'{key:20s} =',file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+    ### Hack.debug();
+
+# class Hack
+
+# Globals
+
+elsauce = Site("El Sauce",-70.764941 ,-30.47069,1565.427,+4.0);
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+# HEREHEREHERE
+if __name__ == "__main__":
+    opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+    opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>     be verbose about work.")
+
+    (options, args) = opts.parse_args()
+
+    # (wg-python-atfiles)
+    tlist = TargetList(targnames, refnames)
+
+

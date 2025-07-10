@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# (wg-astroconda-pdb)
+# (wg-python-fix-pdbrc)
+#
+#
+# (compile (format "python -m py_compile %s" (buffer-file-name)))
+# (compile (format "pdoc3 %s" (buffer-file-name)))
+#
+#############################################################################
+### HEREHEREHERE
+
+import os
+import optparse
+import sys
+import re
+import numpy as np
+import pandas as pd
+from astropy.io import fits
+
+
+__FSDEBUG = [False,True][os.getenv('FSDEBUG') == '']
+
+# to handle the Unicode filenames from Win1X
+_encoding = 'utf-8'                         # deal with nt's UTF issues.
+if(os.name == 'nt'):
+    _encoding = 'utf-16'
+# with io.open(listname,'r',encoding=_encoding) as f:
+
+# (wg-python-types)
+#############################################################################
+#
+#
+#  /home/wayne/bin/MakeAoVStandard
+# (wg-python-emacs-help)
+#
+# (wg-python-toc)
+#
+#
+#############################################################################
+
+__doc__ = """
+
+/home/wayne/bin/MakeAoVStandard
+[options] files...
+
+
+
+
+2025-04-28T11:39:49-0600
+"""
+
+
+__man__ = """
+
+The calibration files may include comment parameter information
+consisting of the comment character '#', a parameter name, and the
+parameter value. These elements are separated by whitespace. Any other
+comment where the first word does not match one of the allowed
+parameter names is ignored by the program. The parameter names are
+"type" identifying the type of calibration file, "units" identifying
+wavelength units, "band" identifying the band for magnitudes, and
+"weff" identifying the effective wavelength of the band.
+
+
+Standard Files contain only:
+   type
+   units
+
+
+Other parameters: (Not used herein).
+band
+weff
+
+
+The iraf variable onedstds$
+
+
+File with types, and filter parameters.
+ /home/wayne/iraf-2.18/noao/lib/onedstds/blackbody/params.dat
+  Type    Teff     V      J      H      K      L   Lprime    M
+  A0V     9480   0.00   0.00   0.00   0.00   0.00   0.00   0.00
+
+import numpy as np  
+filename = "/home/wayne//iraf-2.18/extern/gmisc/lib/onedstds/iidscal/l93080.dat"
+wv=dat[:][:,0]
+delt = dat[:][:,2]
+
+Vega is hr7001
+
+More data points:
+/home/wayne/iraf-2.18/extern/gmisc/lib/onedstds/irscal/hr7001.dat
+
+Observatory database -- add custom db here.
+/home/wayne/iraf-2.18/noao/lib/obsdb.dat
+
+
+caldir:
+osfn("onedstds$")
+'/home/wayne/anaconda3/envs/geminiconda/iraf/noao/lib/onedstds/'
+
+
+"""
+
+##############################################################################
+# Place holder to wrap our parameter value settings within a namespace
+#
+##############################################################################
+class parms:
+    pass
+
+parms.standard      = { 'input'           :  '',
+                        'output'          :  'std',
+                        'airmass'         :  '',                # AIRMASS keyword
+                        'answer'          :  iraf.no,
+                        'apertures'       :  '',
+                        'bandsep'         :  INDEF,
+                        'bandwidth'       :  INDEF,
+                        'beam_switch'     :  iraf.no,
+                        'caldir'          :  '',
+                        'cursor'          :  '',
+                        'exptime'         :  '',
+                        'extinction'      :  '',
+                        'fnuzero'         :  3.68e-20,
+                        'graphics'        :  'stdgraph',
+                        'interact'        :  iraf.yes,
+                        'mag'             :  '',
+                        'magband'         :  '',
+                        'observatory'     :  ')_.observatory',  # the observatory task or OBSERVAT keyword
+                        'samestar'        :  iraf.yes,
+                        'star_name'       :  '',
+                        'teff'            :  ''
+                        'mode'            :  'al',
+                      }
+
+params.observatory =  { 'altitude'        :  1597.152,
+                        'command'         :  'set',
+                        'images'          :  '',                # scan images for OBSERVAT kw and use that 
+                        'latitude'        :  31.96333333333333,
+                        'longitude'       :  111.6,
+                        'name'            :  'Watson El Sauce Observatory',
+                        'observatory'     :  'elsauce',
+                        'obsid'           :  'elsauce',
+                        'override'        :  '',
+                        'timezone'        :  4.0,
+                        'verbose'         :  iraf.yes
+                        'mode'            :  'ql',
+                       }
+
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+__all__     = ['','']   # list of quoted items to export
+
+
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+# HEREHEREHERE
+if __name__ == "__main__":
+    opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+    opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>     be verbose about work.")
+
+    (options, args) = opts.parse_args()
+
+    # (wg-python-atfiles)
+    for filename in args:
+        with open(filename,'r') if filename else sys.stdin as f:
+            for l in f:
+                if('#' in l):
+                    continue
+                parts = map(str.strip,l.split())
+

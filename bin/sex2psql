@@ -1,0 +1,1533 @@
+#!/usr/bin/env python
+
+# HEREHEREHERE
+
+#############################################################################
+#  /opt/io/wayne/clones/git/wgtools/py/sex2psql
+# (compile "pydoc3 ./sex2psql")
+# (compile "./sex2psql -h")
+# (find-file-other-frame ".pdbrc")
+# (wg-ureka-pdb)
+#
+# emacs helpers
+# (set-background-color "light blue")
+# (dired "/home/emacs/python")
+# (wg-python-toc)
+#
+# __doc__ = """
+# __author__  = 'Wayne Green'
+# __version__ = '0.2'
+# class PSQLDatabaseException(Exception):
+#    def __init__(self,message,errors=None):                  # PSQLDatabaseException::__init__()
+# class PSQLDatabase(object):
+#    def __init__(self,dbname,table,scatcollection=[],        # PSQLDatabase::__init__()
+#    def append(self,item):                                   # PSQLDatabase::append()
+#    def use_database(self):
+#    def createdb(self,os=sys.stdout):                        # PSQLDatabase::write
+#    def writedb(self,os=sys.stdout):                         # PSQLDatabase::write
+#    def debug(self,msg="",os=sys.stderr):                    # PSQLDatabase::debug()
+#    def q3c(self,os=sys.stdout):
+# class SextractorConversionException(Exception):
+#    def __init__(self,message,errors=None):
+# class Scat:
+# class SCat:
+#    def pw50tst(v):
+#    @staticmethod
+#    def describe(key):                                       # staticmethod SCat::describe()
+#    @staticmethod
+#    def validkey(keylist):                                   # staticmethod SCat::(validkey)
+#    @staticmethod
+#    def _tofloat(v):                                         # staticmethod SCat::_tofloat()
+#    @staticmethod
+#    def _toint(v):                                           # staticmethod SCat::_toint()
+#    @staticmethod
+#    def _tostring(v):                                        # staticmethod SCat::_tostring()
+#    def __init__(self, filename,translations={}):            # SCat::__init__()
+#    def compilecat(self):                                    # SCat::compilecat()
+#    def insert(self,table,os,schema=""):                     # SCat::insert()
+#    def add_filter(self,key,algorithm):                      # SCat::add_filter()
+#    def filter(self):                                        # SCat::filter()
+#    def convert(self,key,func):                              # SCat::convert()
+#    def debug(self, msg="", os=sys.stderr):                  # SCat::debug()
+#    def __getitem__(self, columnkey):                        # SCat::__getitem__()
+#    def __setitem__(self,columnkey,item):                    # SCat::__setitem__()
+#    def verify(self, keylist):                               # SCat::verify()
+#    def use_database(self):                                  # SCat.use_database()
+#    def write_psql_create(self, dbname, tablename,os=sys.stderr, dropflag=False):  # SCat::write_psql_create()
+#    def write_psql_insert(self, outname,dbname, tablename, os=sys.stderr):  # SCat::write_psql_insert
+# def loadfiles(filehandle):
+# if __name__ == "__main__":
+#
+#############################################################################
+# 2022-05-12T06:42:45-0600 wlg -- added @ file support.
+#
+#############################################################################
+import copy            # want deepcopy
+import os
+import optparse
+import re
+import stat
+import sys
+import numpy
+
+__doc__ = """
+
+[options] files...
+
+usage:
+  sex2psql [-D mydb] [-s myschema] [-t mytable] *cat > <catalog>.psql [--delete] files...
+
+or
+  ls -1 *cat > myfilelist.txt
+  sex2psql ... --file=myfilelist.txt
+
+or, better yet
+  ls -1 *cat | grep -v ignoreit | sex2psql ..
+
+--file=<filename> get a list of catalog files, one each per line, from
+                  this path, and append to args. This allows adding
+                  a few by hand, to a machine generated list. Files
+                  must exist, or program aborts. Lines starting with a sharp
+                  are deemed comments.
+
+Options:
+  -h, --help            show this help message and exit
+  -D DATABASENAME, --database=DATABASENAME
+                        <str>     name of database
+  -c, --create          <bool>    create the database
+  -a AUTOINCREMENT, --autoincrement=AUTOINCREMENT
+                        <int>     val * 1000000 (1e6) for sequence number base
+  -m MASTERTABLE, --master=MASTERTABLE
+                        <str>     name of the main table
+  -o SQLNAME, --output=SQLNAME
+                        <str>     name of the output file, or stdout
+  -s SCHEMA, --schema=SCHEMA
+                        <str>     if specified use the name of the schema [].
+  -t DATABASETABLE, --table=DATABASETABLE
+                        <str>     name of table
+  -f USERFIELDS, --field=USERFIELDS
+                        <str>     add a 'field=type[:defvalue]' to table
+  -v, --verbose         <bool>     be verbose about work.
+  --delete              <bool>     add delete table if not exists clause.
+  --file=USEFILE        <filename> Take each catalog filename from this file.
+  --translate=TRANSLATIONS
+                        keyname=newname  translate the Sextractor keys to our
+                        keys
+
+
+Output to stdout, is a ``.psql'' file with the star's data from
+sextractor catalog(s).  The --delete will add a delete clause for
+corresponding table and auti_increment sequence.
+
+sextractor usage:
+for f in *fits; do sextractor $f -CATALOG_NAME ${f/fits/cat} ; sex2csv ${f/fits/cat} ; done
+
+This program has a built-in table of sextractor files. It does not parse
+defaults.param.
+
+The names ALPHAWIN_SKY is changed to ``ora'' and DELTAWIN_SKY to ``odec'' for
+consistency. (That was driving me nuts). Any SQL keywords are translated
+to their text with an 'o_' prepended.
+
+Typical .cat format:
+
+#   1 X_IMAGE                Object position along x                                    [pixel]
+#   2 Y_IMAGE                Object position along y                                    [pixel]
+#   3 FWHM_IMAGE             FWHM assuming a gaussian core                              [pixel]
+#   4 FWHM_WORLD             FWHM assuming a gaussian core                              [deg]
+#   5 ELONGATION             A_IMAGE/B_IMAGE
+#   6 ELLIPTICITY            1 - B_IMAGE/A_IMAGE
+#   7 FLUX_ISO               Isophotal flux                                             [count]
+#   8 MAG_ISO                Isophotal magnitude                                        [mag]
+   996.001     18.916    10.29  0.002857096    1.041    0.040     8859.175  16.7895
+  1410.443     16.234     3.65  0.001013589    1.026    0.025     15718.65  16.1670
+
+Examples:
+
+~bin/sex2psql
+
+-- Match the catalog to the sextractor catalog, using metrics based on the
+-- sextractor statics
+
+-- This select statement takes UniqueID from the database as a handy
+-- key.
+ select r2s(a.ora) as 'RA' ,d2s(a.odec) as 'Dec' ,a.imag,
+        a.UniqueID,FWHM_IMAGE, FWHM_WORLD * 3600.0 as 'FWHM_SKY', BACKGROUND, MAG_AUTO,
+        ELONGATION, ELLIPTICITY, FLUX_ISO   from  sextractor a
+ inner join lsc1m004_fl04_20150117_0091_e90cat b
+ on vnearby(a.ora,a.odec,5,ALPHAWIN_SKY,DELTAWIN_SKY) = 1
+    where ELLIPTICITY < 0.10 and
+    FWHM_WORLD * 3600.0 < 3.5
+    order by imag
+    into outfile '/tmp/%s.zpt' fields terminated by '|';
+
+Synopsis:
+  sex2psql -D mydb -s myschema -t mytable *cat > <catalog>.psql [--delete] files...
+
+  Accept a .cat file as stdin or as a paramater; 
+  Output to stdout (redirect into a <myname>.psql)
+  -s <schema> to set the schema
+  -D to name the databasename
+  -t to name the table name <default sex2psql>
+"""
+
+__author__  = 'Wayne Green'
+__version__ = '0.2'
+
+# sqlheader databasename deleteclause tablebame incrementval
+
+
+
+catsub  = re.compile(r'cat$')  # rename .cat to .fits for filenames.
+
+##############################################################################
+# SQL/FITS keyword collisions, and internal consistency values.
+##############################################################################
+# keywords to be avoided as field names at all costs!
+sql_keywords = {  # (folded into two columns )
+"add"                : "o_add",               "lines"               : "o_lines",
+"all"                : "o_all",               "load"                : "o_load",
+"alter"              : "o_alter",             "localtime"           : "o_localtime",
+"analyze"            : "o_analyze",           "localtimestamp"      : "o_localtimestamp",
+"and"                : "o_and",               "lock"                : "o_lock",
+"as"                 : "o_as",                "long"                : "o_long",
+"asc"                : "o_asc",               "longblob"            : "o_longblob",
+"asensitive"         : "o_asensitive",        "longtext"            : "o_longtext",
+"before"             : "o_before",            "loop"                : "o_loop",
+"between"            : "o_between",           "low_priority"        : "o_low_priority",
+"bigint"             : "o_bigint",            "match"               : "o_match",
+"binary"             : "o_binary",            "mediumblob"          : "o_mediumblob",
+"blob"               : "o_blob",              "mediumint"           : "o_mediumint",
+"both"               : "o_both",              "mediumtext"          : "o_mediumtext",
+"by"                 : "o_by",                "middleint"           : "o_middleint",
+"call"               : "o_call",              "minute_microsecond"  : "o_minute_microsecond",
+"cascade"            : "o_cascade",           "minute_second"       : "o_minute_second",
+"case"               : "o_case",              "mod"                 : "o_mod",
+"change"             : "o_change",            "modifies"            : "o_modifies",
+"char"               : "o_char",              "natural"             : "o_natural",
+"character"          : "o_character",         "not"                 : "o_not",
+"check"              : "o_check",             "no_write_to_binlog"  : "o_no_write_to_binlog",
+"collate"            : "o_collate",           "null"                : "o_null",
+"column"             : "o_column",            "numeric"             : "o_numeric",
+"condition"          : "o_condition",         "on"                  : "o_on",
+"connection"         : "o_connection",        "optimize"            : "o_optimize",
+"constraint"         : "o_constraint",        "option"              : "o_option",
+"continue"           : "o_continue",          "optionally"          : "o_optionally",
+"convert"            : "o_convert",           "or"                  : "o_or",
+"create"             : "o_create",            "order"               : "o_order",
+"cross"              : "o_cross",             "out"                 : "o_out",
+"current_date"       : "o_current_date",      "outer"               : "o_outer",
+"current_time"       : "o_current_time",      "outfile"             : "o_outfile",
+"current_timestamp"  : "o_current_timestamp", "precision"           : "o_precision",
+"current_user"       : "o_current_user",      "primary"             : "o_primary",
+"cursor"             : "o_cursor",            "procedure"           : "o_procedure",
+"database"           : "o_database",          "purge"               : "o_purge",
+"databases"          : "o_databases",         "read"                : "o_read",
+"day_hour"           : "o_day_hour",          "reads"               : "o_reads",
+"day_microsecond"    : "o_day_microsecond",   "real"                : "o_real",
+"day_minute"         : "o_day_minute",        "references"          : "o_references",
+"day_second"         : "o_day_second",        "regexp"              : "o_regexp",
+"dec"                : "o_dec",               "release"             : "o_release",
+"decimal"            : "o_decimal",           "rename"              : "o_rename",
+"declare"            : "o_declare",           "repeat"              : "o_repeat",
+"default"            : "o_default",           "replace"             : "o_replace",
+"delayed"            : "o_delayed",           "require"             : "o_require",
+"delete"             : "o_delete",            "restrict"            : "o_restrict",
+"desc"               : "o_desc",              "return"              : "o_return",
+"describe"           : "o_describe",          "revoke"              : "o_revoke",
+"deterministic"      : "o_deterministic",     "right"               : "o_right",
+"distinct"           : "o_distinct",          "rlike"               : "o_rlike",
+"distinctrow"        : "o_distinctrow",       "schema"              : "o_schema",
+"div"                : "o_div",               "schemas"             : "o_schemas",
+"double"             : "o_double",            "second_microsecond"  : "o_second_microsecond",
+"drop"               : "o_drop",              "select"              : "o_select",
+"dual"               : "o_dual",              "sensitive"           : "o_sensitive",
+"each"               : "o_each",              "separator"           : "o_separator",
+"else"               : "o_else",              "set"                 : "o_set",
+"elseif"             : "o_elseif",            "show"                : "o_show",
+"enclosed"           : "o_enclosed",          "smallint"            : "o_smallint",
+"escaped"            : "o_escaped",           "soname"              : "o_soname",
+"exists"             : "o_exists",            "spatial"             : "o_spatial",
+"exit"               : "o_exit",              "specific"            : "o_specific",
+"explain"            : "o_explain",           "sql"                 : "o_sql",
+"false"              : "o_false",             "sqlexception"        : "o_sqlexception",
+"fetch"              : "o_fetch",             "sqlstate"            : "o_sqlstate",
+"float"              : "o_float",             "sqlwarning"          : "o_sqlwarning",
+"float4"             : "o_float4",            "sql_big_result"      : "o_sql_big_result",
+"float8"             : "o_float8",            "sql_calc_found_rows" : "o_sql_calc_found_rows",
+"for"                : "o_for",               "sql_small_result"    : "o_sql_small_result",
+"force"              : "o_force",             "ssl"                 : "o_ssl",
+"foreign"            : "o_foreign",           "starting"            : "o_starting",
+"from"               : "o_from",              "straight_join"       : "o_straight_join",
+"fulltext"           : "o_fulltext",          "table"               : "o_table",
+"goto"               : "o_goto",              "terminated"          : "o_terminated",
+"grant"              : "o_grant",             "then"                : "o_then",
+"group"              : "o_group",             "tinyblob"            : "o_tinyblob",
+"having"             : "o_having",            "tinyint"             : "o_tinyint",
+"high_priority"      : "o_high_priority",     "tinytext"            : "o_tinytext",
+"hour_microsecond"   : "o_hour_microsecond",  "to"                  : "o_to",
+"hour_minute"        : "o_hour_minute",       "trailing"            : "o_trailing",
+"hour_second"        : "o_hour_second",       "trigger"             : "o_trigger",
+"if"                 : "o_if",                "true"                : "o_true",
+"ignore"             : "o_ignore",            "undo"                : "o_undo",
+"in"                 : "o_in",                "union"               : "o_union",
+"index"              : "o_index",             "unique"              : "o_unique",
+"infile"             : "o_infile",            "unlock"              : "o_unlock",
+"inner"              : "o_inner",             "unsigned"            : "o_unsigned",
+"inout"              : "o_inout",             "update"              : "o_update",
+"insensitive"        : "o_insensitive",       "upgrade"             : "o_upgrade",
+"insert"             : "o_insert",            "usage"               : "o_usage",
+"int"                : "o_int",               "use"                 : "o_use",
+"int1"               : "o_int1",              "using"               : "o_using",
+"int2"               : "o_int2",              "utc_date"            : "o_utc_date",
+"int3"               : "o_int3",              "utc_time"            : "o_utc_time",
+"int4"               : "o_int4",              "utc_timestamp"       : "o_utc_timestamp",
+"int8"               : "o_int8",              "values"              : "o_values",
+"integer"            : "o_integer",           "varbinary"           : "o_varbinary",
+"interval"           : "o_interval",          "varchar"             : "o_varchar",
+"into"               : "o_into",              "varcharacter"        : "o_varcharacter",
+"is"                 : "o_is",                "varying"             : "o_varying",
+"iterate"            : "o_iterate",           "when"                : "o_when",
+"join"               : "o_join",              "where"               : "o_where",
+"key"                : "o_key",               "while"               : "o_while",
+"keys"               : "o_keys",              "with"                : "o_with",
+"kill"               : "o_kill",              "write"               : "o_write",
+"label"              : "o_label",             "xor"                 : "o_xor",
+"leading"            : "o_leading",           "year_month"          : "o_year_month",
+"leave"              : "o_leave",             "zerofill"            : "o_zerofill",
+"left"               : "o_left",
+"like"               : "o_like",
+"limit"              : "o_limit",
+# Datatypes (folded into two columns )
+"bigint"             : "o_bigint",            "numeric"             : "o_numeric",
+"blob"               : "o_blob",              "precision"           : "o_precision",
+"char"               : "o_char",              "raw"                 : "o_raw",
+"date"               : "o_date",              "clob"                : "o_clob",
+"datetime"           : "o_datetime",          "real"                : "o_real",
+"decimal"            : "o_decimal",           "set"                 : "o_set",
+"double"             : "o_double",            "smallint"            : "o_smallint",
+"enum"               : "o_enum",              "text"                : "o_text",
+"float"              : "o_float",             "time"                : "o_time",
+"int"                : "o_int",               "timestamp"           : "o_timestamp",
+"integer"            : "o_integer",           "tinyblob"            : "o_tinyblob",
+"longblob"           : "o_longblob",          "tinyint"             : "o_tinyint",
+"longtext"           : "o_longtext",          "tinytext"            : "o_tinytext",
+"mediumblob"         : "o_mediumblob",        "varchar"             : "o_varchar",
+"mediumint"          : "o_mediumint",         "varchar2"            : "o_varchar2",
+"mediumtext"         : "o_mediumtext",        "year"                : "o_year",
+"number"             : "o_number",
+}
+
+##############################################################################
+# PSQLDatabaseException
+#
+##############################################################################
+class PSQLDatabaseException(Exception):
+   """Special exception to allow differentiated capture of exceptions"""
+   def __init__(self,message,errors=None):                  # PSQLDatabaseException::__init__()
+      super(PSQLDatabaseException,self).__init__("Bias "+ message)
+      self.errors = errors
+
+   ### PSQLDatabaseException.__init__()
+
+# PSQLDatabaseException
+
+##############################################################################
+# PSQLDatabase - using SCat (sextractor catalog class) as an example.
+#
+##############################################################################
+class PSQLDatabase(object):
+   """ Make a database image, compile all the scats (make the complete
+   database table definition), then have the SCAT return a set
+   of INSERT statements. Allow ourselves to be inherited.
+   """
+
+   q3cheader = """CREATE INDEX ON %s  (public.q3c_ang2ipix(ora,odec));
+CLUSTER %s_q3c_ang2ipix_idx      ON %s;
+ANALYZE  %s;
+   """
+   
+
+   # PSQLDatabase.translatetypes numpy type -> psql type.
+   translatetypes = {
+                      numpy.dtype(type('S')) : 'text             ',   # NOTE padded here!
+                      numpy.dtype(type(1.0)) : 'double precision ',
+                      numpy.dtype(type(1))   : 'integer          '
+                    }
+
+   def __init__(self,dbname,table,scatcollection=[],        # PSQLDatabase::__init__()
+           schema="",sequencestart=1000000): 
+      """Given a databasename, a table name, a schema name make the
+      create part for a database as requested, and make a whole lot of
+      insert lines from each file in the catalog."""
+      self.dbname           = dbname   # particulars of the database
+      self.table            = table
+      self.schema           = schema
+      self.collection       = scatcollection
+      self.header           = None
+      self.trailer          = None
+      self.writeheader      = False   # write table definitions
+      self.rowdefinitions   = {'fname' : PSQLDatabase.translatetypes[numpy.dtype(type('S'))]}      # 'key', type;
+      # Loop across all the candidate files; build up the CREATE TABLE information.
+
+   ### PSQLDatabase.__init__()
+
+   def append(self,item):                                   # PSQLDatabase::append()
+      """Add an item to the collections."""
+      self.collection.append(item)
+
+      return self
+
+   ### PSQLDatabase.append()
+
+   def use_database(self):
+      """Add the dash-c for the db"""
+      print("\\c %s" % self.dbname)
+
+   def createdb(self,os=sys.stdout):                        # PSQLDatabase::write
+      """Caller will call this first off to create the database.
+      Each file in the collection merges its headers into one master
+      dictionary together with the types. This master dictionary names
+      all rows in the file with a default of NULL. For files from
+      runs with different column names, those files missing a column
+      will simply not include it in it's INSERT statement; the DB will
+      supply a NULL for that field.
+      """
+
+      try:
+         for o in self.collection:  # o needs a member variable/function called headers()
+            h = o.headers  # [headername, [stuff]]
+            for k,v in h.items():
+               ntype = PSQLDatabase.translatetypes[v[-1]]
+               if(k not in self.rowdefinitions):
+                  self.rowdefinitions[k] = ntype   # the numpytype
+               else:  # make sure any new name has the same type
+                  if(self.rowdefinitions[k] is not ntype):
+                     raise PSQLDatabaseException("PSQLDatabase type mismatch %s in file %s" % (ntype, o.filename))
+      except:
+         raise PSQLDatabaseException("PSQLDatabase - died trying to collect all headers")
+
+      if(0) : print("creating db.",file=sys.stderr)
+
+      schemaname = self.table                               # start with the table name
+
+      # start the top of the file
+      #print("""\\c %s""" % self.dbname, file=os)
+      if(self.schema != "" and self.schema is not None):
+         print("set search_path = %s;" % self.schema, file=os)
+      print("""
+DROP TABLE IF EXISTS %s;
+DROP SEQUENCE IF EXISTS %s_sequence;
+CREATE SEQUENCE %s_sequence START 100000;
+
+CREATE TABLE %s (
+   UniqueID  integer PRIMARY KEY DEFAULT nextval('%s_sequence'),
+"""  % tuple(5*[self.table]), file=os)
+
+      # add each row definition
+      comma = ""
+      for r,v in self.rowdefinitions.items():
+         print("%s   %-18s %s DEFAULT NULL" % (comma,r,v),end='', file=os)
+         comma = ",\n"
+
+      print("\n);", file=os)
+
+      return self
+
+   ### PSQLDatabase.createdb()
+
+   def writedb(self,os=sys.stdout):                         # PSQLDatabase::write
+      """The database may be created somewhere, or done in this
+      output file (os) by a previous call to cPSQLDatabase.reatedb
+      in this run. Visit each file in the collection, and have
+      it write its INSERT statements; it knows its fields and their
+      types.
+      """
+
+      for o in self.collection:                # gather all the table definitions
+         o.insert(self.table,os,self.schema)
+
+      return self
+
+   ### PSQLDatabase.writedb()
+
+   def debug(self,msg="",os=sys.stderr):                    # PSQLDatabase::debug()
+      """Help with momentary debugging"""
+      print("PSQLDatabase -%s " % msg, file=os)
+      print("self.dbname            ", self.dbname, file=os)
+      print("self.table             ", self.table, file=os)
+      print("self.schema            ", self.schema, file=os)
+      print("Count in collection %d " % (len(self.collection)), file=os)
+
+      return self
+
+   ### PSQLDatabase.debug()
+
+   __PSQLDatabase_debug = debug  # preserve our debug name if we're inherited
+
+   def q3c(self,os=sys.stdout):
+      """Add q3c indexing for the table"""
+      tname = self.table
+      print(self.q3cheader % (tname,tname,tname,tname), file=os)
+
+# class PSQLDatabase
+
+##############################################################################
+# SextractorConversionException
+#
+##############################################################################
+class SextractorConversionException(Exception):
+   """Special exception to allow differentiated capture of exceptions"""
+   def __init__(self,message,errors=None):
+      super(SextractorConversionException,self).__init__("Bias "+ message)
+      self.errors = errors
+# SextractorConversionException
+
+class Scat:
+   pass
+
+##############################################################################
+# SCat
+#
+##############################################################################
+class SCat:
+   """
+   Manage a SExtractor catalog to my taste. Open the file, pick through
+   the hint comments at top of the file to determine the mapping of the
+   sextractor keyword to the column locations. When asked for a keyword
+   make sure it is in the file and return a numpy array with the column
+   of data. This permits any order of any catalog file to be used, but
+   the header must include the column keyword. If not, rerun sextractor
+   with appropriate default files.
+
+   The caller may supply column name translation table, to change
+   sextractors name into their name. One popular translation
+   is from ALPHAWIN_SKY, DELTAWIN_SKY to ora,odec to maintain
+   consistency with other tables in a database.
+
+   The catalog, once assimilated, may be reduced by first defining
+   functions (SCat will vectorize the function); adding a function
+   to be applied to a column identified by the keyword. Thus several
+   tests can be applied each column, and multiple columns may
+   be tested. E.g:
+
+   sc = SCat('test.cat')
+   sc.debug()                          # show the raw table
+   def pw50tst(v):
+      return v > 2.8 and v < 3.5
+   vpw50tst = numpy.vectorize(pw50tst) # prep the function
+   sc.add_filter('FWHM_IMAGE',vpw50tst)
+   sc.debug()                          # show the truncated table.
+
+   """
+
+   ###################################################################
+   #  Put these here, so we can reference them with a dictionary --
+   # convertkeys.{} below.
+   ###################################################################
+
+   @staticmethod
+   def describe(key):                                       # staticmethod SCat::describe()
+      """Given a key, test its inclusion and return a string with the
+      description and the units. If not in table, returns None. This
+      may be called without an instantiated instance. SCat.describe('ALPHAWIN_SKY')
+      """
+      ret = None
+      if(key in SCat.sextractorkeys):
+         ret = "%s" % " ".join([key]+SCat.sextractorkeys[key])
+      return ret
+
+   ### staticmethod SCat.describe()
+
+   @staticmethod
+   def validkey(keylist):                                   # staticmethod SCat::(validkey)
+      """Given a list of keys; return list of those in the keylist
+      that are unrecognized in SCat.sextractorkeys. Use this to test
+      a catalog file to assure the keys you want are in the file that
+      this instance manages. If not, re-run sextractor with right
+      default parameters.
+      """
+      mias = []
+      ret  = None
+      for k in keylist:
+         if(k not in SCat.sextractorkeys):
+            mias.append(k)
+      if(len(mias) != 0):
+         ret = mias
+      return ret
+
+   ### SCat.validkey()
+
+   @staticmethod
+   def _tofloat(v):                                         # staticmethod SCat::_tofloat()
+      """Convert string to float."""
+      try:
+         ret = float(v)
+      except:
+         raise SextractorConversionException("Unable to convert %s to a float" % v)
+      return ret
+
+   ### SCat._tofloat()
+
+   @staticmethod
+   def _toint(v):                                           # staticmethod SCat::_toint()
+      """Convert string to integer."""
+      try:
+         ret = int(v,0) if '.' not in v else float(v)
+      except:
+         raise SextractorConversionException("Unable to convert %s to an integer" % v)
+      return ret
+
+   ### SCat._toint()
+
+   @staticmethod
+   def _tostring(v):                                        # staticmethod SCat::_tostring()
+      """Return string as is (a string). If unknown, then let user
+      test and deal with any conversion necessary."""
+      return v
+
+   ### SCat._tostring()
+
+   ##############################################################################
+   # Provide a maping by data-type for any SCat.sextractorkey into a numpy array
+   # of designated type. Static variable (to extent allowed by python).
+   ##############################################################################
+   # Scat.convertkeys
+   convertkeys = {
+      # default.param type        function       result type
+      ''                      : [_tostring.__func__,   numpy.dtype(type('S')) ],
+      '[pixel]'               : [_toint.__func__,      numpy.dtype(type(1.0)) ],
+      '[count]'               : [_toint.__func__,      numpy.dtype(type(1))   ],
+      '[deg]'                 : [_tofloat.__func__,    numpy.dtype(type(1.0)) ],
+      '[mag * arcsec**(-2)]'  : [_tofloat.__func__,    numpy.dtype(type(1.0)) ],
+      '[Focal-pixel]'         : [_toint.__func__,      numpy.dtype(type(1))   ],
+      '[pixel**(-2)]'         : [_tofloat.__func__,    numpy.dtype(type(1.0)) ],
+      '[seconds]'             : [_tofloat.__func__,    numpy.dtype(type(1.0)) ],
+      '[focal-pixel]'         : [_toint.__func__,      numpy.dtype(type(1))   ],
+      '[ordinal]'             : [_toint.__func__,      numpy.dtype(type(1))   ],
+      '[deg**(-2)]'           : [_tofloat.__func__,    numpy.dtype(type(1.0)) ],
+      '[mag]'                 : [_tofloat.__func__,    numpy.dtype(type(1.0)) ],
+      '[m**(-6)]'             : [_tofloat.__func__,    numpy.dtype(type(1.0)) ],
+      '[plane]'               : [_toint.__func__,      numpy.dtype(type(1))   ],
+      '[math]'                : [_tofloat.__func__,    numpy.dtype(type(1.0)) ],
+      '[pixel**2]'            : [_tofloat.__func__,    numpy.dtype(type(1.0)) ],
+      '[cardinal]'            : [_toint.__func__,      numpy.dtype(type(1))   ],
+      '[deg**2]'              : [_tofloat.__func__,    numpy.dtype(type(1.0)) ],
+      'B_IMAGE/A_IMAGE'       : [_tofloat.__func__,    numpy.dtype(type(1.0)) ],
+      'A_IMAGE/B_IMAGE'       : [_tofloat.__func__,    numpy.dtype(type(1.0)) ]
+   }
+
+
+   ##############################################################################
+   # SCat.sextractorkeys static dictionary of all the keys with their explanitory
+   #  notes and sextractor units. Possible to map these units to astropy:
+   #  added "ordinal" "math" "focal-pixel" needs a few more. The additions
+   #  assist with the translation, and is reason we rely on this dictionary.
+   #  There are MISC ones, undocumented yet.
+   ##############################################################################
+   # Scat.sextractorkeys
+   sextractorkeys = {
+   "X_IMAGE"                      :  [ "Object position along x",                                       "[pixel]"               ],
+   "Y_IMAGE"                      :  [ "Object position along y",                                       "[pixel]"               ],
+   "NUMBER"                       :  [ "Running object number",                                         "[ordinal]"             ],  # ordinal - positional number
+   "EXT_NUMBER"                   :  [ "FITS extension number",                                         "[plane]"               ],  # import with MEFS
+   "FLUX_ISO"                     :  [ "Isophotal flux",                                                "[count]"               ],
+   "FLUXERR_ISO"                  :  [ "RMS error for isophotal flux",                                  "[count]"               ],
+   "MAG_ISO"                      :  [ "Isophotal magnitude",                                           "[mag]"                 ],
+   "MAGERR_ISO"                   :  [ "RMS error for isophotal magnitude",                             "[mag]"                 ],
+   "FLUX_ISOCOR"                  :  [ "Corrected isophotal flux",                                      "[count]"               ],
+   "FLUXERR_ISOCOR"               :  [ "RMS error for corrected isophotal flux",                        "[count]"               ],
+   "MAG_ISOCOR"                   :  [ "Corrected isophotal magnitude",                                 "[mag]"                 ],
+   "MAGERR_ISOCOR"                :  [ "RMS error for corrected isophotal magnitude",                   "[mag]"                 ],
+   "FLUX_APER"                    :  [ "Flux vector within fixed circular aperture(s)",                 "[count]"               ],
+   "FLUXERR_APER"                 :  [ "RMS error vector for aperture flux(es)",                        "[count]"               ],
+   "MAG_APER"                     :  [ "Fixed aperture magnitude vector",                               "[mag]"                 ],
+   "MAGERR_APER"                  :  [ "RMS error vector for fixed aperture mag.",                      "[mag]"                 ],
+   "FLUX_AUTO"                    :  [ "Flux within a Kron-like elliptical aperture",                   "[count]"               ],
+   "FLUXERR_AUTO"                 :  [ "RMS error for AUTO flux",                                       "[count]"               ],
+   "MAG_AUTO"                     :  [ "Kron-like elliptical aperture magnitude",                       "[mag]"                 ],
+   "MAGERR_AUTO"                  :  [ "RMS error for AUTO magnitude",                                  "[mag]"                 ],
+   "FLUX_PETRO"                   :  [ "Flux within a Petrosian-like elliptical aperture",              "[count]"               ],
+   "FLUXERR_PETRO"                :  [ "RMS error for PETROsian flux",                                  "[count]"               ],
+   "MAG_PETRO"                    :  [ "Petrosian-like elliptical aperture magnitude",                  "[mag]"                 ],
+   "MAGERR_PETRO"                 :  [ "RMS error for PETROsian magnitude",                             "[mag]"                 ],
+   "FLUX_BEST"                    :  [ "Best of FLUX_AUTO and FLUX_ISOCOR",                             "[count]"               ],
+   "FLUXERR_BEST"                 :  [ "RMS error for BEST flux",                                       "[count]"               ],
+   "MAG_BEST"                     :  [ "Best of MAG_AUTO and MAG_ISOCOR",                               "[mag]"                 ],
+   "MAGERR_BEST"                  :  [ "RMS error for MAG_BEST",                                        "[mag]"                 ],
+   "FLUX_WIN"                     :  [ "Gaussian-weighted flux",                                        "[count]"               ],
+   "FLUXERR_WIN"                  :  [ "RMS error for WIN flux",                                        "[count]"               ],
+   "MAG_WIN"                      :  [ "Gaussian-weighted magnitude",                                   "[mag]"                 ],
+   "MAGERR_WIN"                   :  [ "RMS error for MAG_WIN",                                         "[mag]"                 ],
+   "FLUX_SOMFIT"                  :  [ "Flux derived from SOM fit",                                     "[count]"               ],
+   "FLUXERR_SOMFIT"               :  [ "RMS error for SOMFIT flux",                                     "[count]"               ],
+   "MAG_SOMFIT"                   :  [ "Magnitude derived from SOM fit",                                "[mag]"                 ],
+   "MAGERR_SOMFIT"                :  [ "Magnitude error derived from SOM fit",                          "[mag]"                 ],
+   "ERROR_SOMFIT"                 :  [ "Reduced Chi-square error of the SOM fit",                       "[math]"                ],
+   "VECTOR_SOMFIT"                :  [ "Position vector of the winning SOM node",                       "[math]"                ],
+   "KRON_RADIUS"                  :  [ "Kron apertures in units of A or B",                             "[math]"                ],
+   "PETRO_RADIUS"                 :  [ "Petrosian apertures in units of A or B",                        "[math]"                ],
+   "BACKGROUND"                   :  [ "Background at centroid position",                               "[count]"               ],
+   "THRESHOLD"                    :  [ "Detection threshold above background",                          "[count]"               ],
+   "FLUX_MAX"                     :  [ "Peak flux above background",                                    "[count]"               ],
+   "ISOAREA_IMAGE"                :  [ "Isophotal area above Analysis threshold",                       "[pixel**2]"            ],
+   "ISOAREAF_IMAGE"               :  [ "Isophotal area (filtered) above Detection threshold",           "[pixel**2]"            ],
+   "XMIN_IMAGE"                   :  [ "Minimum x-coordinate among detected pixels",                    "[pixel]"               ],
+   "YMIN_IMAGE"                   :  [ "Minimum y-coordinate among detected pixels",                    "[pixel]"               ],
+   "XMAX_IMAGE"                   :  [ "Maximum x-coordinate among detected pixels",                    "[pixel]"               ],
+   "YMAX_IMAGE"                   :  [ "Maximum y-coordinate among detected pixels",                    "[pixel]"               ],
+   "XPEAK_IMAGE"                  :  [ "x-coordinate of the brightest pixel",                           "[pixel]"               ],
+   "YPEAK_IMAGE"                  :  [ "y-coordinate of the brightest pixel",                           "[pixel]"               ],
+   "XPEAK_FOCAL"                  :  [ "Focal-plane x coordinate of the brightest pixel",               "[Focal-pixel]"         ],
+   "YPEAK_FOCAL"                  :  [ "Focal-plane y coordinate of the brightest pixel",               "[Focal-pixel]"         ],
+   "XPEAK_WORLD"                  :  [ "World-x coordinate of the brightest pixel",                     "[deg]"                 ],
+   "YPEAK_WORLD"                  :  [ "World-y coordinate of the brightest pixel",                     "[deg]"                 ],
+   "ALPHAPEAK_SKY"                :  [ "Right ascension of brightest pix (native)",                     "[deg]"                 ],
+   "DELTAPEAK_SKY"                :  [ "Declination of brightest pix (native)",                         "[deg]"                 ],
+   "ALPHAPEAK_J2000"              :  [ "Right ascension of brightest pix (J2000)",                      "[deg]"                 ],
+   "DELTAPEAK_J2000"              :  [ "Declination of brightest pix (J2000)",                          "[deg]"                 ],
+   "ALPHAPEAK_B1950"              :  [ "Right ascension of brightest pix (B1950)",                      "[deg]"                 ],
+   "DELTAPEAK_B1950"              :  [ "Declination of brightest pix (B1950)",                          "[deg]"                 ],
+   "X_IMAGE_DBL"                  :  [ "Object position along x (double precision)",                    "[pixel]"               ],
+   "Y_IMAGE_DBL"                  :  [ "Object position along y (double precision)",                    "[pixel]"               ],
+   "X_FOCAL"                      :  [ "Barycenter position along focal-plane x axis",                  "[Focal-pixel]"         ],
+   "Y_FOCAL"                      :  [ "Barycenter position along focal-plane y axis",                  "[Focal-pixel]"         ],
+   "X_WORLD"                      :  [ "Barycenter position along world x axis",                        "[deg]"                 ],
+   "Y_WORLD"                      :  [ "Barycenter position along world y axis",                        "[deg]"                 ],
+   "X_MAMA"                       :  [ "Barycenter position along MAMA x axis",                         "[m**(-6)]"             ],
+   "Y_MAMA"                       :  [ "Barycenter position along MAMA y axis",                         "[m**(-6)]"             ],
+   "ALPHA_SKY"                    :  [ "Right ascension of barycenter (native)",                        "[deg]"                 ],
+   "DELTA_SKY"                    :  [ "Declination of barycenter (native)",                            "[deg]"                 ],
+   "ALPHA_J2000"                  :  [ "Right ascension of barycenter (J2000)",                         "[deg]"                 ],
+   "DELTA_J2000"                  :  [ "Declination of barycenter (J2000)",                             "[deg]"                 ],
+   "ALPHA_B1950"                  :  [ "Right ascension of barycenter (B1950)",                         "[deg]"                 ],
+   "DELTA_B1950"                  :  [ "Declination of barycenter (B1950)",                             "[deg]"                 ],
+   "X2_IMAGE"                     :  [ "Variance along x",                                              "[pixel**2]"            ],
+   "Y2_IMAGE"                     :  [ "Variance along y",                                              "[pixel**2]"            ],
+   "XY_IMAGE"                     :  [ "Covariance between x and y",                                    "[pixel**2]"            ],
+   "X2_WORLD"                     :  [ "Variance along X-WORLD (alpha)",                                "[deg**2]"              ],
+   "Y2_WORLD"                     :  [ "Variance along Y-WORLD (delta)",                                "[deg**2]"              ],
+   "XY_WORLD"                     :  [ "Covariance between X-WORLD and Y-WORLD",                        "[deg**2]"              ],
+   "CXX_IMAGE"                    :  [ "Cxx object ellipse parameter",                                  "[pixel**(-2)]"         ],
+   "CYY_IMAGE"                    :  [ "Cyy object ellipse parameter",                                  "[pixel**(-2)]"         ],
+   "CXY_IMAGE"                    :  [ "Cxy object ellipse parameter",                                  "[pixel**(-2)]"         ],
+   "CXX_WORLD"                    :  [ "Cxx object ellipse parameter (WORLD units)",                    "[deg**(-2)]"           ],
+   "CYY_WORLD"                    :  [ "Cyy object ellipse parameter (WORLD units)",                    "[deg**(-2)]"           ],
+   "CXY_WORLD"                    :  [ "Cxy object ellipse parameter (WORLD units)",                    "[deg**(-2)]"           ],
+   "A_IMAGE"                      :  [ "Profile RMS along major axis",                                  "[pixel]"               ],
+   "B_IMAGE"                      :  [ "Profile RMS along minor axis",                                  "[pixel]"               ],
+   "THETA_IMAGE"                  :  [ "Position angle (CCW/x)",                                        "[deg]"                 ],
+   "A_WORLD"                      :  [ "Profile RMS along major axis (world units)",                    "[deg]"                 ],
+   "B_WORLD"                      :  [ "Profile RMS along minor axis (world units)",                    "[deg]"                 ],
+   "THETA_WORLD"                  :  [ "Position angle (CCW/world-x)",                                  "[deg]"                 ],
+   "THETA_SKY"                    :  [ "Position angle (east of north) (native)",                       "[deg]"                 ],
+   "THETA_J2000"                  :  [ "Position angle (east of north) (J2000)",                        "[deg]"                 ],
+   "THETA_B1950"                  :  [ "Position angle (east of north) (B1950)",                        "[deg]"                 ],
+   "ERRX2_IMAGE"                  :  [ "Variance of position along x",                                  "[pixel**2]"            ],
+   "ERRY2_IMAGE"                  :  [ "Variance of position along y",                                  "[pixel**2]"            ],
+   "ERRXY_IMAGE"                  :  [ "Covariance of position between x and y",                        "[pixel**2]"            ],
+   "ERRX2_WORLD"                  :  [ "Variance of position along X-WORLD (alpha)",                    "[deg**2]"              ],
+   "ERRY2_WORLD"                  :  [ "Variance of position along Y-WORLD (delta)",                    "[deg**2]"              ],
+   "ERRXY_WORLD"                  :  [ "Covariance of position X-WORLD/Y-WORLD",                        "[deg**2]"              ],
+   "ERRCXX_IMAGE"                 :  [ "Cxx error ellipse parameter",                                   "[pixel**(-2)]"         ],
+   "ERRCYY_IMAGE"                 :  [ "Cyy error ellipse parameter",                                   "[pixel**(-2)]"         ],
+   "ERRCXY_IMAGE"                 :  [ "Cxy error ellipse parameter",                                   "[pixel**(-2)]"         ],
+   "ERRCXX_WORLD"                 :  [ "Cxx error ellipse parameter (WORLD units)",                     "[deg**(-2)]"           ],
+   "ERRCYY_WORLD"                 :  [ "Cyy error ellipse parameter (WORLD units)",                     "[deg**(-2)]"           ],
+   "ERRCXY_WORLD"                 :  [ "Cxy error ellipse parameter (WORLD units)",                     "[deg**(-2)]"           ],
+   "ERRA_IMAGE"                   :  [ "RMS position error along major axis",                           "[pixel]"               ],
+   "ERRB_IMAGE"                   :  [ "RMS position error along minor axis",                           "[pixel]"               ],
+   "ERRTHETA_IMAGE"               :  [ "Error ellipse position angle (CCW/x)",                          "[deg]"                 ],
+   "ERRA_WORLD"                   :  [ "World RMS position error along major axis",                     "[deg]"                 ],
+   "ERRB_WORLD"                   :  [ "World RMS position error along minor axis",                     "[deg]"                 ],
+   "ERRTHETA_WORLD"               :  [ "Error ellipse pos. angle (CCW/world-x)",                        "[deg]"                 ],
+   "ERRTHETA_SKY"                 :  [ "Native error ellipse pos. angle (east of north)",               "[deg]"                 ],
+   "ERRTHETA_J2000"               :  [ "J2000 error ellipse pos. angle (east of north)",                "[deg]"                 ],
+   "ERRTHETA_B1950"               :  [ "B1950 error ellipse pos. angle (east of north)",                "[deg]"                 ],
+   "XWIN_IMAGE"                   :  [ "Windowed position estimate along x",                            "[pixel]"               ],
+   "YWIN_IMAGE"                   :  [ "Windowed position estimate along y",                            "[pixel]"               ],
+   "XWIN_FOCAL"                   :  [ "Windowed position along focal-plane x axis",                    "[focal-pixel]"         ],
+   "YWIN_FOCAL"                   :  [ "Windowed position along focal-plane y axis",                    "[focal-pixel]"         ],
+   "XWIN_WORLD"                   :  [ "Windowed position along world x axis",                          "[deg]"                 ],
+   "YWIN_WORLD"                   :  [ "Windowed position along world y axis",                          "[deg]"                 ],
+   "ALPHAWIN_SKY"                 :  [ "Windowed right ascension  (native)",                            "[deg]"                 ],
+   "DELTAWIN_SKY"                 :  [ "Windowed declination (native)",                                 "[deg]"                 ],
+   "ALPHAWIN_J2000"               :  [ "Windowed right ascension (J2000)",                              "[deg]"                 ],
+   "DELTAWIN_J2000"               :  [ "windowed declination (J2000)",                                  "[deg]"                 ],
+   "ALPHAWIN_B1950"               :  [ "Windowed right ascension (B1950)",                              "[deg]"                 ],
+   "DELTAWIN_B1950"               :  [ "Windowed declination (B1950)",                                  "[deg]"                 ],
+   "X2WIN_IMAGE"                  :  [ "Windowed variance along x",                                     "[pixel**2]"            ],
+   "Y2WIN_IMAGE"                  :  [ "Windowed variance along y",                                     "[pixel**2]"            ],
+   "XYWIN_IMAGE"                  :  [ "Windowed covariance between x and y",                           "[pixel**2]"            ],
+   "X2WIN_WORLD"                  :  [ "Windowed variance along X-WORLD (alpha)",                       "[deg**2]"              ],
+   "Y2WIN_WORLD"                  :  [ "Windowed variance along Y-WORLD (delta)",                       "[deg**2]"              ],
+   "XYWIN_WORLD"                  :  [ "Windowed covariance between X-WORLD and Y-WORLD",               "[deg**2]"              ],
+   "CXXWIN_IMAGE"                 :  [ "Windowed Cxx object ellipse parameter",                         "[pixel**(-2)]"         ],
+   "CYYWIN_IMAGE"                 :  [ "Windowed Cyy object ellipse parameter",                         "[pixel**(-2)]"         ],
+   "CXYWIN_IMAGE"                 :  [ "Windowed Cxy object ellipse parameter",                         "[pixel**(-2)]"         ],
+   "CXXWIN_WORLD"                 :  [ "Windowed Cxx object ellipse parameter (WORLD units)",           "[deg**(-2)]"           ],
+   "CYYWIN_WORLD"                 :  [ "Windowed Cyy object ellipse parameter (WORLD units)",           "[deg**(-2)]"           ],
+   "CXYWIN_WORLD"                 :  [ "Windowed Cxy object ellipse parameter (WORLD units)",           "[deg**(-2)]"           ],
+   "AWIN_IMAGE"                   :  [ "Windowed profile RMS along major axis",                         "[pixel]"               ],
+   "BWIN_IMAGE"                   :  [ "Windowed profile RMS along minor axis",                         "[pixel]"               ],
+   "THETAWIN_IMAGE"               :  [ "Windowed position angle (CCW/x)",                               "[deg]"                 ],
+   "AWIN_WORLD"                   :  [ "Windowed profile RMS along major axis (world units)",           "[deg]"                 ],
+   "BWIN_WORLD"                   :  [ "Windowed profile RMS along minor axis (world units)",           "[deg]"                 ],
+   "THETAWIN_WORLD"               :  [ "Windowed position angle (CCW/world-x)",                         "[deg]"                 ],
+   "THETAWIN_SKY"                 :  [ "Windowed position angle (east of north) (native)",              "[deg]"                 ],
+   "THETAWIN_J2000"               :  [ "Windowed position angle (east of north) (J2000)",               "[deg]"                 ],
+   "THETAWIN_B1950"               :  [ "Windowed position angle (east of north) (B1950)",               "[deg]"                 ],
+   "ERRX2WIN_IMAGE"               :  [ "Variance of windowed pos along x",                              "[pixel**2]"            ],
+   "ERRY2WIN_IMAGE"               :  [ "Variance of windowed pos along y",                              "[pixel**2]"            ],
+   "ERRXYWIN_IMAGE"               :  [ "Covariance of windowed pos between x and y",                    "[pixel**2]"            ],
+   "ERRX2WIN_WORLD"               :  [ "Variance of windowed pos along X-WORLD (alpha)",                "[deg**2]"              ],
+   "ERRY2WIN_WORLD"               :  [ "Variance of windowed pos along Y-WORLD (delta)",                "[deg**2]"              ],
+   "ERRXYWIN_WORLD"               :  [ "Covariance of windowed pos X-WORLD/Y-WORLD",                    "[deg**2]"              ],
+   "ERRCXXWIN_IMAGE"              :  [ "Cxx windowed error ellipse parameter",                          "[pixel**(-2)]"         ],
+   "ERRCYYWIN_IMAGE"              :  [ "Cyy windowed error ellipse parameter",                          "[pixel**(-2)]"         ],
+   "ERRCXYWIN_IMAGE"              :  [ "Cxy windowed error ellipse parameter",                          "[pixel**(-2)]"         ],
+   "ERRCXXWIN_WORLD"              :  [ "Cxx windowed error ellipse parameter (WORLD units)",            "[deg**(-2)]"           ],
+   "ERRCYYWIN_WORLD"              :  [ "Cyy windowed error ellipse parameter (WORLD units)",            "[deg**(-2)]"           ],
+   "ERRCXYWIN_WORLD"              :  [ "Cxy windowed error ellipse parameter (WORLD units)",            "[deg**(-2)]"           ],
+   "ERRAWIN_IMAGE"                :  [ "RMS windowed pos error along major axis",                       "[pixel]"               ],
+   "ERRBWIN_IMAGE"                :  [ "RMS windowed pos error along minor axis",                       "[pixel]"               ],
+   "ERRTHETAWIN_IMAGE"            :  [ "Windowed error ellipse pos angle (CCW/x)",                      "[deg]"                 ],
+   "ERRAWIN_WORLD"                :  [ "World RMS windowed pos error along major axis",                 "[deg]"                 ],
+   "ERRBWIN_WORLD"                :  [ "World RMS windowed pos error along minor axis",                 "[deg]"                 ],
+   "ERRTHETAWIN_WORLD"            :  [ "Windowed error ellipse pos. angle (CCW/world-x)",               "[deg]"                 ],
+   "ERRTHETAWIN_SKY"              :  [ "Native windowed error ellipse pos. angle (east of north)",      "[deg]"                 ],
+   "ERRTHETAWIN_J2000"            :  [ "J2000 windowed error ellipse pos. angle (east of north)",       "[deg]"                 ],
+   "ERRTHETAWIN_B1950"            :  [ "B1950 windowed error ellipse pos. angle (east of north)",       "[deg]"                 ],
+   "NITER_WIN"                    :  [ "Number of iterations for WIN centering",                        "[cardinal]"            ],
+   "MU_THRESHOLD"                 :  [ "Detection threshold above background",                          "[mag * arcsec**(-2)]"  ],
+   "MU_MAX"                       :  [ "Peak surface brightness above background",                      "[mag * arcsec**(-2)]"  ],
+   "ISOAREA_WORLD"                :  [ "Isophotal area above Analysis threshold",                       "[deg**2]"              ],
+   "ISOAREAF_WORLD"               :  [ "Isophotal area (filtered) above Detection threshold",           "[deg**2]"              ],
+   "ISO0"                         :  [ "Isophotal area at level 0",                                     "[pixel**2]"            ],
+   "ISO1"                         :  [ "Isophotal area at level 1",                                     "[pixel**2]"            ],
+   "ISO2"                         :  [ "Isophotal area at level 2",                                     "[pixel**2]"            ],
+   "ISO3"                         :  [ "Isophotal area at level 3",                                     "[pixel**2]"            ],
+   "ISO4"                         :  [ "Isophotal area at level 4",                                     "[pixel**2]"            ],
+   "ISO5"                         :  [ "Isophotal area at level 5",                                     "[pixel**2]"            ],
+   "ISO6"                         :  [ "Isophotal area at level 6",                                     "[pixel**2]"            ],
+   "ISO7"                         :  [ "Isophotal area at level 7",                                     "[pixel**2]"            ],
+   "FLAGS"                        :  [ "Extraction flags",                                              ""                      ],
+   "FLAGS_WEIGHT"                 :  [ "Weighted extraction flags",                                     ""                      ],
+   "FLAGS_WIN"                    :  [ "Flags for WINdowed parameters",                                 ""                      ],
+   "IMAFLAGS_ISO"                 :  [ "FLAG-image flags OR'ed over the iso. profile",                  ""                      ],
+   "NIMAFLAGS_ISO"                :  [ "Number of flagged pixels entering IMAFLAGS_ISO",                "[cardinal]"            ],
+   "NLOWWEIGHT_ISO"               :  [ "Nb of pixels with low weight over the iso. profile",            "[cardinal]"            ],
+   "NLOWDWEIGHT_ISO"              :  [ "Nb of pixels with low det. weight over the iso. profile",       "[cardinal]"            ],
+   "FWHM_IMAGE"                   :  [ "FWHM assuming a gaussian core",                                 "[pixel]"               ],
+   "FWHM_WORLD"                   :  [ "FWHM assuming a gaussian core",                                 "[deg]"                 ],
+   "ELONGATION"                   :  [ "A_IMAGE/B_IMAGE",                                               "[math]"                ],
+   "ELLIPTICITY"                  :  [ "1 - B_IMAGE/A_IMAGE",                                           "[math]"                ],
+   "POLAR_IMAGE"                  :  [ "(A_IMAGE^2 - B_IMAGE^2)/(A_IMAGE^2 + B_IMAGE^2)",               "[math]"                ],
+   "POLAR_WORLD"                  :  [ "(A_WORLD^2 - B_WORLD^2)/(A_WORLD^2 + B_WORLD^2)",               "[math]"                ],
+   "POLARWIN_IMAGE"               :  [ "(AWIN^2 - BWIN^2)/(AWIN^2 + BWIN^2)",                           "[math]"                ],
+   "POLARWIN_WORLD"               :  [ "(AWIN^2 - BWIN^2)/(AWIN^2 + BWIN^2)",                           "[math]"                ],
+   "CLASS_STAR"                   :  [ "S/G classifier output",                                         "[math]"                ],
+   "VIGNET"                       :  [ "Pixel data around detection",                                   "[count]"               ],
+   "VIGNET_SHIFT"                 :  [ "Pixel data around detection, corrected for shift",              "[count]"               ],
+   "VECTOR_ASSOC"                 :  [ "ASSOCiated parameter vector",                                   ""                      ],
+   "NUMBER_ASSOC"                 :  [ "Number of ASSOCiated IDs",                                      "[cardinal]"            ],
+   "THRESHOLDMAX"                 :  [ "Maximum threshold possible for detection",                      "[count]"               ],
+   "FLUX_GROWTH"                  :  [ "Cumulated growth-curve",                                        "[count]"               ],
+   "FLUX_GROWTHSTEP"              :  [ "Step for growth-curves",                                        "[pixel]"               ],
+   "MAG_GROWTH"                   :  [ "Cumulated magnitude growth-curve",                              "[mag]"                 ],
+   "MAG_GROWTHSTEP"               :  [ "Step for growth-curves",                                        "[pixel]"               ],
+   "FLUX_RADIUS"                  :  [ "Fraction-of-light radii",                                       "[pixel]"               ],
+   "XPSF_IMAGE"                   :  [ "X coordinate from PSF-fitting",                                 "[pixel]"               ],
+   "YPSF_IMAGE"                   :  [ "Y coordinate from PSF-fitting",                                 "[pixel]"               ],
+   "XPSF_WORLD"                   :  [ "PSF position along world x axis",                               "[deg]"                 ],
+   "YPSF_WORLD"                   :  [ "PSF position along world y axis",                               "[deg]"                 ],
+   "ALPHAPSF_SKY"                 :  [ "Right ascension of the fitted PSF (native)",                    "[deg]"                 ],
+   "DELTAPSF_SKY"                 :  [ "Declination of the fitted PSF (native)",                        "[deg]"                 ],
+   "ALPHAPSF_J2000"               :  [ "Right ascension of the fitted PSF (J2000)",                     "[deg]"                 ],
+   "DELTAPSF_J2000"               :  [ "Declination of the fitted PSF (J2000)",                         "[deg]"                 ],
+   "ALPHAPSF_B1950"               :  [ "Right ascension of the fitted PSF (B1950)",                     "[deg]"                 ],
+   "DELTAPSF_B1950"               :  [ "Declination of the fitted PSF (B1950)",                         "[deg]"                 ],
+   "FLUX_PSF"                     :  [ "Flux from PSF-fitting",                                         "[count]"               ],
+   "FLUXERR_PSF"                  :  [ "RMS flux error for PSF-fitting",                                "[count]"               ],
+   "MAG_PSF"                      :  [ "Magnitude from PSF-fitting",                                    "[mag]"                 ],
+   "MAGERR_PSF"                   :  [ "RMS magnitude error from PSF-fitting",                          "[mag]"                 ],
+   "NITER_PSF"                    :  [ "Number of iterations for PSF-fitting",                          "[cardinal]"            ],
+   "CHI2_PSF"                     :  [ "Reduced chi2 from PSF-fitting",                                 "[math]"                ],
+   "ERRX2PSF_IMAGE"               :  [ "Variance of PSF position along x",                              "[pixel**2]"            ],
+   "ERRY2PSF_IMAGE"               :  [ "Variance of PSF position along y",                              "[pixel**2]"            ],
+   "ERRXYPSF_IMAGE"               :  [ "Covariance of PSF position between x and y",                    "[pixel**2]"            ],
+   "ERRX2PSF_WORLD"               :  [ "Variance of PSF position along X-WORLD (alpha)",                "[deg**2]"              ],
+   "ERRY2PSF_WORLD"               :  [ "Variance of PSF position along Y-WORLD (delta)",                "[deg**2]"              ],
+   "ERRXYPSF_WORLD"               :  [ "Covariance of PSF position X-WORLD/Y-WORLD",                    "[deg**2]"              ],
+   "ERRCXXPSF_IMAGE"              :  [ "Cxx PSF error ellipse parameter",                               "[pixel**(-2)]"         ],
+   "ERRCYYPSF_IMAGE"              :  [ "Cyy PSF error ellipse parameter",                               "[pixel**(-2)]"         ],
+   "ERRCXYPSF_IMAGE"              :  [ "Cxy PSF error ellipse parameter",                               "[pixel**(-2)]"         ],
+   "ERRCXXPSF_WORLD"              :  [ "Cxx PSF error ellipse parameter (WORLD units)",                 "[deg**(-2)]"           ],
+   "ERRCYYPSF_WORLD"              :  [ "Cyy PSF error ellipse parameter (WORLD units)",                 "[deg**(-2)]"           ],
+   "ERRCXYPSF_WORLD"              :  [ "Cxy PSF error ellipse parameter (WORLD units)",                 "[deg**(-2)]"           ],
+   "ERRAPSF_IMAGE"                :  [ "PSF RMS position error along major axis",                       "[pixel]"               ],
+   "ERRBPSF_IMAGE"                :  [ "PSF RMS position error along minor axis",                       "[pixel]"               ],
+   "ERRTHETAPSF_IMAGE"            :  [ "PSF error ellipse position angle (CCW/x)",                      "[deg]"                 ],
+   "ERRAPSF_WORLD"                :  [ "World PSF RMS position error along major axis",                 "[pixel]"               ],
+   "ERRBPSF_WORLD"                :  [ "World PSF RMS position error along minor axis",                 "[pixel]"               ],
+   "ERRTHETAPSF_WORLD"            :  [ "PSF error ellipse pos. angle (CCW/world-x)",                    "[deg]"                 ],
+   "ERRTHETAPSF_SKY"              :  [ "Native PSF error ellipse pos. angle (east of north)",           "[deg]"                 ],
+   "ERRTHETAPSF_J2000"            :  [ "J2000 PSF error ellipse pos. angle (east of north)",            "[deg]"                 ],
+   "ERRTHETAPSF_B1950"            :  [ "B1950 PSF error ellipse pos. angle (east of north)",            "[deg]"                 ],
+   "DURATION_ANALYSIS"            :  [ "Duration of analysis for this source",                          "[seconds]"             ],
+   "VECTOR_MODEL"                 :  [ "Model-fitting coefficients",                                    ""                      ],
+   "VECTOR_MODELERR"              :  [ "Model-fitting coefficient uncertainties",                       ""                      ],
+   "MATRIX_MODELERR"              :  [ "Model-fitting covariance matrix",                               ""                      ],
+   "CHI2_MODEL"                   :  [ "Reduced Chi2 of the fit",                                       ""                      ],
+   "FLAGS_MODEL"                  :  [ "Model-fitting flags",                                           ""                      ],
+   "NITER_MODEL"                  :  [ "Number of iterations for model-fitting",                        ""                      ],
+   "FLUX_MODEL"                   :  [ "Flux from model-fitting",                                       "[count]"               ],
+   "FLUXERR_MODEL"                :  [ "RMS error on model-fitting flux",                               "[count]"               ],
+   "MAG_MODEL"                    :  [ "Magnitude from model-fitting",                                  "[mag]"                 ],
+   "MAGERR_MODEL"                 :  [ "RMS error on model-fitting magnitude",                          "[mag]"                 ],
+   "FLUX_MAX_MODEL"               :  [ "Peak model flux above background",                              "[count]"               ],
+   "FLUX_EFF_MODEL"               :  [ "Effective model flux above background",                         "[count]"               ],
+   "FLUX_MEAN_MODEL"              :  [ "Mean effective model flux above background",                    "[count]"               ],
+   "MU_MAX_MODEL"                 :  [ "Peak model surface brightness above background",                "[mag * arcsec**(-2)]"  ],
+   "MU_EFF_MODEL"                 :  [ "Effective model surface brightness above background",           "[mag * arcsec**(-2)]"  ],
+   "MU_MEAN_MODEL"                :  [ "Mean effective model surface brightness above background",      "[mag * arcsec**(-2)]"  ],
+   "XMODEL_IMAGE"                 :  [ "X coordinate from model-fitting",                               "[pixel]"               ],
+   "YMODEL_IMAGE"                 :  [ "Y coordinate from model-fitting",                               "[pixel]"               ],
+   "XFOCAL_WORLD"                 :  [ "Fitted position along focal-plane x axis",                      ""                      ],
+   "YFOCAL_WORLD"                 :  [ "Fitted position along focal-plane y axis",                      ""                      ],
+   "XMODEL_WORLD"                 :  [ "Fitted position along world x axis",                            "[deg]"                 ],
+   "YMODEL_WORLD"                 :  [ "Fitted position along world y axis",                            "[deg]"                 ],
+   "ALPHAMODEL_SKY"               :  [ "Fitted position along right ascension  (native)",               "[deg]"                 ],
+   "DELTAMODEL_SKY"               :  [ "Fitted position along declination (native)",                    "[deg]"                 ],
+   "ALPHAMODEL_J2000"             :  [ "Fitted position along right ascension (J2000)",                 "[deg]"                 ],
+   "DELTAMODEL_J2000"             :  [ "Fitted position along declination (J2000)",                     "[deg]"                 ],
+   "ALPHAMODEL_B1950"             :  [ "Fitted position along right ascension (B1950)",                 "[deg]"                 ],
+   "DELTAMODEL_B1950"             :  [ "Fitted position along declination (B1950)",                     "[deg]"                 ],
+   "ERRX2MODEL_IMAGE"             :  [ "Variance of fitted position along x",                           "[pixel**2]"            ],
+   "ERRY2MODEL_IMAGE"             :  [ "Variance of fitted position along y",                           "[pixel**2]"            ],
+   "ERRXYMODEL_IMAGE"             :  [ "Covariance of fitted position between x and y",                 "[pixel**2]"            ],
+   "ERRX2MODEL_WORLD"             :  [ "Variance of fitted position along X-WORLD (alpha)",             "[deg**2]"              ],
+   "ERRY2MODEL_WORLD"             :  [ "Variance of fitted position along Y-WORLD (delta)",             "[deg**2]"              ],
+   "ERRXYMODEL_WORLD"             :  [ "Covariance of fitted position X-WORLD/Y-WORLD",                 "[deg**2]"              ],
+   "ERRCXXMODEL_IMAGE"            :  [ "Cxx error ellipse parameter of fitted position",                "[pixel**(-2)]"         ],
+   "ERRCYYMODEL_IMAGE"            :  [ "Cyy error ellipse parameter of fitted position",                "[pixel**(-2)]"         ],
+   "ERRCXYMODEL_IMAGE"            :  [ "Cxy error ellipse parameter of fitted position",                "[pixel**(-2)]"         ],
+   "ERRCXXMODEL_WORLD"            :  [ "Cxx fitted error ellipse parameter (WORLD units)",              "[deg**(-2)]"           ],
+   "ERRCYYMODEL_WORLD"            :  [ "Cyy fitted error ellipse parameter (WORLD units)",              "[deg**(-2)]"           ],
+   "ERRCXYMODEL_WORLD"            :  [ "Cxy fitted error ellipse parameter (WORLD units)",              "[deg**(-2)]"           ],
+   "ERRAMODEL_IMAGE"              :  [ "RMS error of fitted position along major axis",                 "[pixel]"               ],
+   "ERRBMODEL_IMAGE"              :  [ "RMS error of fitted position along minor axis",                 "[pixel]"               ],
+   "ERRTHETAMODEL_IMAGE"          :  [ "Error ellipse pos.angle of fitted position (CCW/x)",            "[deg]"                 ],
+   "ERRAMODEL_WORLD"              :  [ "World RMS error of fitted position along major axis",           "[deg]"                 ],
+   "ERRBMODEL_WORLD"              :  [ "World RMS error of fitted position along minor axis",           "[deg]"                 ],
+   "ERRTHETAMODEL_WORLD"          :  [ "Error ellipse pos.angle of fitted position (CCW/world-x)",      "[deg]"                 ],
+   "ERRTHETAMODEL_SKY"            :  [ "Native fitted error ellipse pos. angle (east of north)",        "[deg]"                 ],
+   "ERRTHETAMODEL_J2000"          :  [ "J2000 fitted error ellipse pos. angle (east of north)",         "[deg]"                 ],
+   "ERRTHETAMODEL_B1950"          :  [ "B1950 fitted error ellipse pos. angle (east of north)",         "[deg]"                 ],
+   "X2MODEL_IMAGE"                :  [ "Variance along x from model-fitting",                           "[pixel**2]"            ],
+   "Y2MODEL_IMAGE"                :  [ "Variance along y from model-fitting",                           "[pixel**2]"            ],
+   "XYMODEL_IMAGE"                :  [ "Covariance between x and y from model-fitting",                 "[pixel**2]"            ],
+   "ELLIP1MODEL_IMAGE"            :  [ "Ellipticity component from model-fitting",                      ""                      ],
+   "ELLIP2MODEL_IMAGE"            :  [ "Ellipticity component from model-fitting",                      ""                      ],
+   "POLAR1MODEL_IMAGE"            :  [ "Ellipticity component (quadratic) from model-fitting",          ""                      ],
+   "POLAR2MODEL_IMAGE"            :  [ "Ellipticity component (quadratic) from model-fitting",          ""                      ],
+   "ELLIP1ERRMODEL_IMAGE"         :  [ "Ellipticity component std.error from model-fitting",            ""                      ],
+   "ELLIP2ERRMODEL_IMAGE"         :  [ "Ellipticity component std.error from model-fitting",            ""                      ],
+   "ELLIPCORRMODEL_IMAGE"         :  [ "Corr.coeff between ellip.components from model-fitting",        ""                      ],
+   "POLAR1ERRMODEL_IMAGE"         :  [ "Polarisation component std.error from model-fitting",           ""                      ],
+   "POLAR2ERRMODEL_IMAGE"         :  [ "Polarisation component std.error from model-fitting",           ""                      ],
+   "POLARCORRMODEL_IMAGE"         :  [ "Corr.coeff between polar. components from fitting",             ""                      ],
+   "X2MODEL_WORLD"                :  [ "Variance along X-WORLD (alpha) from model-fitting",             "[deg**2]"              ],
+   "Y2MODEL_WORLD"                :  [ "Variance along Y_WORLD (delta) from model-fitting",             "[deg**2]"              ],
+   "XYMODEL_WORLD"                :  [ "Covariance between X-WORLD and Y-WORLD from model-fitting",     "[deg**2]"              ],
+   "ELLIP1MODEL_WORLD"            :  [ "Ellipticity component from model-fitting",                      ""                      ],
+   "ELLIP2MODEL_WORLD"            :  [ "Ellipticity component from model-fitting",                      ""                      ],
+   "POLAR1MODEL_WORLD"            :  [ "Polarisation component from model-fitting",                     ""                      ],
+   "POLAR2MODEL_WORLD"            :  [ "Polarisation component from model-fitting",                     ""                      ],
+   "ELLIP1ERRMODEL_WORLD"         :  [ "Ellipticity component std.error from model-fitting",            ""                      ],
+   "ELLIP2ERRMODEL_WORLD"         :  [ "Ellipticity component std.error from model-fitting",            ""                      ],
+   "ELLIPCORRMODEL_WORLD"         :  [ "Corr.coeff between ellip.components from model-fitting",        ""                      ],
+   "POLAR1ERRMODEL_WORLD"         :  [ "Polarisation component std.error from model-fitting",           ""                      ],
+   "POLAR2ERRMODEL_WORLD"         :  [ "Polarisation component std.error from model-fitting",           ""                      ],
+   "POLARCORRMODEL_WORLD"         :  [ "Corr.coeff between polar. components from fitting",             ""                      ],
+   "CXXMODEL_IMAGE"               :  [ "Cxx ellipse parameter from model-fitting",                      "[pixel**(-2)]"         ],
+   "CYYMODEL_IMAGE"               :  [ "Cyy ellipse parameter from model-fittinh",                      "[pixel**(-2)]"         ],
+   "CXYMODEL_IMAGE"               :  [ "Cxy ellipse parameter from model-fitting",                      "[pixel**(-2)]"         ],
+   "CXXMODEL_WORLD"               :  [ "Cxx ellipse parameter (WORLD) from model-fitting",              "[deg**(-2)]"           ],
+   "CYYMODEL_WORLD"               :  [ "Cyy ellipse parameter (WORLD) from model-fitting",              "[deg**(-2)]"           ],
+   "CXYMODEL_WORLD"               :  [ "Cxy ellipse parameter (WORLD) from model-fitting",              "[deg**(-2)]"           ],
+   "AMODEL_IMAGE"                 :  [ "Model RMS along major axis",                                    "[pixel]"               ],
+   "BMODEL_IMAGE"                 :  [ "Model RMS along minor axis",                                    "[pixel]"               ],
+   "THETAMODEL_IMAGE"             :  [ "Model position angle (CCW/x)",                                  "[deg]"                 ],
+   "AMODEL_WORLD"                 :  [ "Model RMS along major axis (WORLD units)",                      "[deg]"                 ],
+   "BMODEL_WORLD"                 :  [ "Model RMS along minor axis (WORLD units)",                      "[deg]"                 ],
+   "THETAMODEL_WORLD"             :  [ "Model position angle (CCW/WORLD-x)",                            "[deg]"                 ],
+   "THETAMODEL_SKY"               :  [ "Model position angle (east of north) (native)",                 "[deg]"                 ],
+   "THETAMODEL_J2000"             :  [ "Model position angle (east of north) (J2000)",                  "[deg]"                 ],
+   "THETAMODEL_B1950"             :  [ "Model position angle (east of north) (B1950)",                  "[deg]"                 ],
+   "SPREAD_MODEL"                 :  [ "Spread parameter from model-fitting",                           ""                      ],
+   "SPREADERR_MODEL"              :  [ "Spread parameter error from model-fitting",                     ""                      ],
+   "FLUX_BACKOFFSET"              :  [ "Background offset from fitting",                                "[count]"               ],
+   "FLUXERR_BACKOFFSET"           :  [ "RMS error on fitted background offset",                         "[count]"               ],
+   "FLUX_POINTSOURCE"             :  [ "Point source flux from fitting",                                "[count]"               ],
+   "FLUXERR_POINTSOURCE"          :  [ "RMS error on fitted point source total flux",                   "[count]"               ],
+   "MAG_POINTSOURCE"              :  [ "Point source total magnitude from fitting",                     "[mag]"                 ],
+   "MAGERR_POINTSOURCE"           :  [ "RMS error on fitted point source total magnitude",              "[mag]"                 ],
+   "FLUX_SPHEROID"                :  [ "Spheroid total flux from fitting",                              "[count]"               ],
+   "FLUXERR_SPHEROID"             :  [ "RMS error on fitted spheroid total flux",                       "[count]"               ],
+   "MAG_SPHEROID"                 :  [ "Spheroid total magnitude from fitting",                         "[mag]"                 ],
+   "MAGERR_SPHEROID"              :  [ "RMS error on fitted spheroid total magnitude",                  "[mag]"                 ],
+   "FLUX_MAX_SPHEROID"            :  [ "Peak spheroid flux above background",                           "[count]"               ],
+   "FLUX_EFF_SPHEROID"            :  [ "Effective spheroid flux above background",                      "[count]"               ],
+   "FLUX_MEAN_SPHEROID"           :  [ "Mean effective spheroid flux above background",                 "[count]"               ],
+   "MU_MAX_SPHEROID"              :  [ "Peak spheroid surface brightness above background",             "[mag * arcsec**(-2)]"  ],
+   "MU_EFF_SPHEROID"              :  [ "Effective spheroid surface brightness above background",        "[mag * arcsec**(-2)]"  ],
+   "MU_MEAN_SPHEROID"             :  [ "Mean effective spheroid surface brightness above background",   "[mag * arcsec**(-2)]"  ],
+   "SPHEROID_REFF_IMAGE"          :  [ "Spheroid effective radius from fitting",                        "[pixel]"               ],
+   "SPHEROID_REFFERR_IMAGE"       :  [ "RMS error on fitted spheroid effective radius",                 "[pixel]"               ],
+   "SPHEROID_REFF_WORLD"          :  [ "Spheroid effective radius from fitting",                        "[deg]"                 ],
+   "SPHEROID_REFFERR_WORLD"       :  [ "RMS error on fitted spheroid effective radius",                 "[deg]"                 ],
+   "SPHEROID_ASPECT_IMAGE"        :  [ "Spheroid aspect ratio from fitting",                            ""                      ],
+   "SPHEROID_ASPECTERR_IMAGE"     :  [ "RMS error on fitted spheroid aspect ratio",                     ""                      ],
+   "SPHEROID_ASPECT_WORLD"        :  [ "Spheroid aspect ratio from fitting",                            ""                      ],
+   "SPHEROID_ASPECTERR_WORLD"     :  [ "RMS error on fitted spheroid aspect ratio",                     ""                      ],
+   "SPHEROID_THETA_IMAGE"         :  [ "Spheroid position angle (CCW/x) from fitting",                  "[deg]"                 ],
+   "SPHEROID_THETAERR_IMAGE"      :  [ "RMS error on spheroid position angle",                          "[deg]"                 ],
+   "SPHEROID_THETA_WORLD"         :  [ "Spheroid position angle (CCW/world-x)",                         "[deg]"                 ],
+   "SPHEROID_THETAERR_WORLD"      :  [ "RMS error on spheroid position angle",                          "[deg]"                 ],
+   "SPHEROID_THETA_SKY"           :  [ "Spheroid position angle (east of north, native)",               "[deg]"                 ],
+   "SPHEROID_THETA_J2000"         :  [ "Spheroid position angle (east of north, J2000)",                "[deg]"                 ],
+   "SPHEROID_THETA_B1950"         :  [ "Spheroid position angle (east of north, B1950)",                "[deg]"                 ],
+   "SPHEROID_SERSICN"             :  [ "Spheroid Sersic index from fitting",                            ""                      ],
+   "SPHEROID_SERSICNERR"          :  [ "RMS error on fitted spheroid Sersic index",                     ""                      ],
+   "FLUX_DISK"                    :  [ "Disk total flux from fitting",                                  "[count]"               ],
+   "FLUXERR_DISK"                 :  [ "RMS error on fitted disk total flux",                           "[count]"               ],
+   "MAG_DISK"                     :  [ "Disk total magnitude from fitting",                             "[mag]"                 ],
+   "MAGERR_DISK"                  :  [ "RMS error on fitted disk total magnitude",                      "[mag]"                 ],
+   "FLUX_MAX_DISK"                :  [ "Peak disk flux above background",                               "[count]"               ],
+   "FLUX_EFF_DISK"                :  [ "Effective disk flux above background",                          "[count]"               ],
+   "FLUX_MEAN_DISK"               :  [ "Mean effective disk flux above background",                     "[count]"               ],
+   "MU_MAX_DISK"                  :  [ "Peak disk surface brightness above background",                 "[mag * arcsec**(-2)]"  ],
+   "MU_EFF_DISK"                  :  [ "Effective disk surface brightness above background",            "[mag * arcsec**(-2)]"  ],
+   "MU_MEAN_DISK"                 :  [ "Mean effective disk surface brightness above background",       "[mag * arcsec**(-2)]"  ],
+   "DISK_SCALE_IMAGE"             :  [ "Disk scalelength from fitting",                                 "[pixel]"               ],
+   "DISK_SCALEERR_IMAGE"          :  [ "RMS error on fitted disk scalelength",                          "[pixel]"               ],
+   "DISK_SCALE_WORLD"             :  [ "Disk scalelength from fitting (world coords)",                  "[deg]"                 ],
+   "DISK_SCALEERR_WORLD"          :  [ "RMS error on fitted disk scalelength (world coords)",           "[deg]"                 ],
+   "DISK_ASPECT_IMAGE"            :  [ "Disk aspect ratio from fitting",                                ""                      ],
+   "DISK_ASPECTERR_IMAGE"         :  [ "RMS error on fitted disk aspect ratio",                         ""                      ],
+   "DISK_ASPECT_WORLD"            :  [ "Disk aspect ratio from fitting",                                ""                      ],
+   "DISK_ASPECTERR_WORLD"         :  [ "RMS error on disk aspect ratio",                                ""                      ],
+   "DISK_INCLINATION"             :  [ "Disk inclination from fitting",                                 "[deg]"                 ],
+   "DISK_INCLINATIONERR"          :  [ "RMS error on disk inclination from fitting",                    "[deg]"                 ],
+   "DISK_THETA_IMAGE"             :  [ "Disk position angle (CCW/x) from fitting",                      "[deg]"                 ],
+   "DISK_THETAERR_IMAGE"          :  [ "RMS error on fitted disk position angle",                       "[deg]"                 ],
+   "DISK_THETA_WORLD"             :  [ "Disk position angle (CCW/world-x)",                             "[deg]"                 ],
+   "DISK_THETAERR_WORLD"          :  [ "RMS error on disk position angle",                              "[deg]"                 ],
+   "DISK_THETA_SKY"               :  [ "Disk position angle (east of north, native)",                   "[deg]"                 ],
+   "DISK_THETA_J2000"             :  [ "Disk position angle (east of north, J2000)",                    "[deg]"                 ],
+   "DISK_THETA_B1950"             :  [ "Disk position angle (east of north, B1950)",                    "[deg]"                 ]
+   }
+
+   def __init__(self, filename,translations={}):            # SCat::__init__()
+      """Given a sextractor catalog; extract the header info
+      build a dictionary and populate with data. Expect rows
+      of where data is described by the header part of the file.
+
+      Usually the sharp-sigh (#) is a comment, here the comments
+      carry information about column location. The sextractor
+      catalog files are machine generated, so we don't expect
+      comments.
+
+      Caveat(s): Dont properly handle the VIGNET yet.
+
+      """
+      self.translations = translations
+      self.filename     = filename                          # fits file name
+      self.headers      = {} # 'fname' : filename}              # header : column the column names in order of appearence
+      self.table        = []                                # the table's columns (see headers for order)
+      self.colorder     = []                                # save keys in order we find them      
+      self.col_length   = None                              # place holder for the length of the cols in the table.
+      self.filters      = {}                                # build these up as we go.
+      self.droprows     = {}                                # if key, then drop row.
+      self.headercnt    = 0
+      self.linecount    = 0
+      lc                = 0                                 # report line mumber if needed
+      idx               = -1
+      tmptable          = []                                # build a python model of data then convert to numpy 2d array.
+
+      tmpheaders = {}
+      ################################################################
+      #  Load the catalog file Header bits (sharp-sign lines)
+      ################################################################
+      with open(filename,'r') as f:
+         try:
+            for l in f:
+               lc  += 1                                        # assist with messages later.
+               idx += 1                                        # header is positional
+               if(l[0] == '#'):                                # header is (still) here.
+                  hparts             = list(map(str.strip,l[1:].split())) # clean each row.
+                  hkey               = hparts[1]               # parts[0] is the hash sign
+                  self.colorder.append(hkey)                   # append in order of apperence
+                  tmpheaders[hkey] = [int(hparts[0])-1] + hparts[1:]  # for explanitory info see sextractorkeys above
+                  continue                                     # as long as there are headers... continue
+               parts = l.split()                               # very first first data line, split on whitespace
+               tmptable.append(parts)                          # put into table as 'string'
+               break                                           # OK, handled the first data line, do rest...
+         except Exception as e:
+            print("File error {} exception {}".format(filename,e.__str__()))
+            raise
+
+         #############################################################
+         #  Load the lines for each detection recorded in catalog
+         #############################################################
+         self.headercnt = lc
+         lc             = 0
+         linecounts     = [] # track length of each line for consistency
+         # Second and subsequent data lines. Delay conversion mapping of
+         # the columns until requested.
+         for l in f:                                        # ...pick up with new logic for tabular data
+            parts = list(map(str.strip,l.split()))          # split on whitespace
+            tmptable.append(parts)                          # table in 'string'
+            lc += 1
+            linecounts.append(len(parts))
+
+         ##############################################################
+         #  Make sure each detection line has the same number of fields
+         ##############################################################
+         check = {}
+         for a in linecounts:
+            if(a not in check):
+               check[a] = 0
+            check[a] += 1
+         if(len(check) != 1):
+            raise SextractorConversionException("Not all detections have same number of fields")
+
+         #############################################################
+         #  Apply translations for Sextractor fields to user's names
+         #############################################################
+         for k,v in tmpheaders.items():                      # search across our headers
+            if(k in self.translations):                      # our key wants translated
+               self.headers[self.translations[k]] = v        # add to self.headers as translated key
+            else:
+               self.headers[k] = v                           # or add as itself
+
+         #############################################################
+         #  Leave table dections as rows. Will transpose later. Leave
+         #  Headers are translated.
+         #############################################################
+         self.table      = numpy.array(tmptable)             # convert the tmp table to the working numpy array
+         self.col_length = self.table.shape[0]               # get the column lengths
+
+   ### SCat.__init__()
+
+   def compilecat(self):                                    # SCat::compilecat()
+      """Change self.table into presentable ASCII values for the insert statements.
+      Pass over the data with the proper functions."""
+      #raise Exception("SCat.compile needs work")
+      coltable = self.table.transpose()
+      newtable = []
+      mapkeys  = {}
+      for k,v in self.headers.items():
+         mapkeys[v[0]] = k                                   # column number, and the headers' key to rest of the header stuff
+      keys = mapkeys.keys()
+      sorted(keys)
+      try:
+         for k in keys:
+            k,v = k,self.headers[mapkeys[k]]
+            func,ftype = SCat.convertkeys.get(v[-1],[SCat._tostring,numpy.dtype(type('S'))])
+            row        = v[0]
+            newtable.append(list(map(func,coltable[row,:])))
+            v.append(ftype)                                  # the 'last thing' in the header's v is type.
+      except Exception as e:
+         print("key = |%s|" %k, "value = ",v,file=sys.stderr)
+         print(e,file=sys.stderr)
+         raise
+      self.table = numpy.array(newtable).transpose()         # wind up each star on a row.
+
+      return self
+
+   ### SCat.compilecat()
+
+   def insert(self,table,os,schema=""):                     # SCat::insert()
+      """Write an INSERT INTO table (mykeys) VALUES + each row"""
+      schemaname = table;
+
+      print("INSERT INTO %s ( fname, " % schemaname,end='', file=os)
+
+      comma = ""
+      
+      for h in self.colorder:
+         nh = self.translations.get(h,h)                     # translate to match
+         print("%s %s" % (comma,nh),end='', file=os)
+         comma = ","
+      print(") VALUES", file=os)
+
+      comma = ""
+      fitsname = self.filename.split('.cat')[0]
+      for row in self.table:                                 # match columns to names.
+         outrow = []
+         for field in row:
+            if(type(field) == type("")):
+               outrow.append("'%s'" % field.strip())
+            else:
+               outrow.append("%f" % field)
+         print("%s ('%s', %s )" % (comma,fitsname,', '.join(outrow)),end='', file=os)
+         comma = ",\n"
+
+      print( ";\n\n", file=os)
+
+      return self
+
+   ### SCat.insert()
+
+   def add_filter(self,key,algorithm):                      # SCat::add_filter()
+      """Given a key (from SCat.sextractorkeys) and a single valued function
+      (may be already vectorized) add to a developing list of tests to
+      use to drop unwanted detections by sextractor. Good example of things
+      to drop are non-stars (fwhm > 0 and < some value; ellipticity, etc.
+      """
+
+      lalgorithm = algorithm                                # localize test the algorithm and vectorize if needed
+      if('vectorize' not in "%s" % type(lalgorithm)):
+         if('function' not in "%s" % lalgorithm):
+            raise SextractorConversionException("Algorithm must be a function or numpy vectorized function")
+         else:
+            lalgorithm = numpy.vectorize(algorithm)         # vectorize here.
+
+      if(key in self.headers):                              # remember the key and algorithm
+         if(key not in self.filters):
+            self.filters[key] = []
+         self.filters[key].append(lalgorithm)               # add to the filters dictionary
+      else:
+         raise SextractorConversionException("Key %s unknown" % key)
+
+      return self
+
+   ### SCat.add_filter()
+
+   def filter(self):                                        # SCat::filter()
+      """Do the trick with any filters in self.filters"""
+      drops = numpy.ones(self.col_length) == 1              # get a boolean index array (all for now)
+      msg   = ""
+      if(len(self.filters.keys()) != 0):                    # somehow a key, algorithm was added for us
+         for k,alist in self.filters.items():               # for each key, apply all algorithms
+            for a in alist:
+               if('vectorize' in "%s" % type(a)):
+                  try:
+                     msg = 'running algorithms'
+                     testres = a(self[k])
+                     msg = 'applying logical_and'
+                     drops = numpy.logical_and(testres,drops)
+                  except:
+                     print("Oops,",k,msg,drops.shape,file=sys.stderr)
+                     print(testres,file=sys.stderr)
+                     print(drops,file=sys.stderr)
+                     raise
+      self.table = self.table[drops,:]                      # keep only rows matching the still true values
+
+      return self
+
+   ### SCat.filter()
+
+   def convert(self,key,func):                              # SCat::convert()
+      """Apply func to the column of key"""
+      self[key] = func(self[key])
+
+      return self
+
+   ### SCat.convert()
+
+   def debug(self, msg="", os=sys.stderr):                  # SCat::debug()
+      """Help with debugging.  try os=StringIO.StringIO() for a string report
+      """
+      print("SCat - %s" % msg,file=os)
+      mias = ""
+      if(1):
+         for h in self.headers:
+            if( h in SCat.sextractorkeys):
+               hdrdesc = SCat.sextractorkeys[h]
+               print >>os,"%-20s %-10s %s" % ("'%s'" % h,hdrdesc[1],hdrdesc[0]) # key, units, verbage
+            else:
+               mias += "Header '%s' unrecognized as header\n" % h
+         if(mias != ""):
+            print("Missing some headers found in file.", file=os)
+            print("Consider editingSCat.sextractorkeys.", file=os)
+            print(mias, file=os)
+
+      return self
+
+   ### SCat.debug()
+
+   def __getitem__(self, columnkey):                        # SCat::__getitem__()
+      """columnkey should be a string text of header key, as referenced in
+      SCat.sextractorkeys. Return appropriate numpy array, based on
+      conversion suggested by the units field of SCat.sextractorkeys.
+      """
+      ret = None
+      if(columnkey not in self.headers):
+         raise Exception("Missing key %s",k)
+         #raise IterationError("Done with the iteration")
+      else:
+         col            = self.table[:,self.headers[columnkey][0]]
+         units          = SCat.sextractorkeys[columnkey][1]
+         convmap,nptype = SCat.convertkeys[units]
+         cols           = list(map(convmap,col))            # fixup the strings in table to working type
+         ret            = numpy.array(cols,nptype)          # return a typed numpy array
+
+      return ret
+
+   ### SCat.__getitem__()
+
+   def __setitem__(self,columnkey,item):                    # SCat::__setitem__()
+      """Set the column value"""
+      if(columnkey not in self.headers):
+         raise Exception("Missing key %s",k)
+         #raise IterationError("Done with the iteration")
+      else:
+         self.table[:,self.headers[columnkey][0]] = item
+
+      return self
+
+   ### SCat.__setitem__()
+
+
+   def verify(self, keylist):                               # SCat::verify()
+      """After loading the file, this instance knows the headers that were
+      found. Given a list of keys to be used later with algorithms;
+      check that they are all present for this file. Keys may not
+      appear in the table if they are not requested in sextractor's
+      default.params file.
+      """
+      mias = []                                             # collect missing-in-action keys
+      ret  = None
+      for k in keylist:
+         if(k not in self.headers):
+            mias.append(k)
+      if(len(mias) != 0):
+         ret = mias
+
+      return ret
+
+   ### SCat.verify()
+
+   def use_database(self):                                  # SCat.use_database()
+      """Write the slash-c for the database we're using"""
+      print("""\\c %s""" % self.dbname)
+
+   ### SCat.use_database()
+
+   def write_psql_create(self, dbname, tablename,os=sys.stderr, dropflag=False):  # SCat::write_psql_create()
+      """Write a sql create create include cwd, fname."""
+      drop=""
+      if(dropflag):
+         drop = "drop table if exists %s; drop sequence if exists %s;" % (dbname, tablename)
+      sqlheader = """%s
+CREATE SEQUENCE %s_sequence START 100000;
+
+CREATE TABLE %s (
+   UniqueID  integer PRIMARY KEY DEFAULT nextval('%s_sequence'),
+   cwd       TEXT,  - save the cwd source this mess.
+   fname     TEXT,"""                                        # we depend on NO NEWLINE here (comma business later)
+
+      print(sqlheader % (drop,tablename,tablename), file=os)
+
+
+      # program will put the row names in.
+
+      return self
+
+   ### SCat.write_psql_create()
+
+   def write_psql_insert(self, outname,dbname, tablename, os=sys.stderr):  # SCat::write_psql_insert
+      """write a psql insert statement and file for the contents of
+      this file, include cwd, fname"""
+
+      return self
+
+   ### SCat.write_psql_insert
+
+# class SCat
+
+##############################################################################
+# Load the files from stdin, or a given filename
+##############################################################################
+def loadfiles(filehandle):
+   """Load the filenames from a side file"""
+   newnames = []
+   for filename in filehandle:
+      newnames.append(filename.strip())
+
+   return newnames
+
+# loadfiles
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+if __name__ == "__main__":
+
+   # ./sex2psql -D test -t wasptable -s wasp12schema --file=list.txt > wasptable.psql
+   if(0):   # DEBUGGING with pdb
+      sys.argv = ['newsex2psql', '-D', 'test', '-t', 'wasp', '-s', 'wasp12', '--file=list.txt']
+
+   user = os.getenv("USER")
+   if(user is None):
+      user='sex2psql'
+
+   opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+   opts.add_option("-D", "--database", action="store", dest="databasename",
+                   default=user,
+                   help="<str>     name of database (default $USER)")
+
+   opts.add_option("-c", "--create", action="store_true", dest="createflag",
+                   default=False,
+                   help="<bool>    create the database")
+
+   opts.add_option("-a", "--autoincrement", action="store", dest="autoincrement",
+                   default="1",
+                   help="<int>     val * 1000000 (1e6) for sequence number base")
+
+   opts.add_option("-m", "--master", action="store", dest="mastertable",
+                   default="sex2psqlmastertable",
+                   help="<str>     name of the main table")
+
+   opts.add_option("-o", "--output", action="store", dest="sqlname",
+                   default=None,
+                   help="<str>     name of the output file, or stdout")
+
+   opts.add_option("-q", "--q3c", action="store_true", dest="q3cflag",
+                   default=False,
+                   help="<bool>    add q3c indexing to end of file.")
+
+   opts.add_option("-s", "--schema", action="store", dest="schema",
+                   default=None,
+                   help="<str>     if specified use the name of the schema [].")
+
+   opts.add_option("-t", "--table", action="store", dest="databasetable",
+                   default="sex2psql",
+                   help="<str>     name of  table")
+
+   opts.add_option("-f", "--field", action="append", dest="userfields",
+                   default=[],
+                   help="<str>     add a 'field=type[:defvalue]' to table")
+
+   opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>     be verbose about work.")
+
+   opts.add_option("--delete", action="store_true", dest="deletetable",
+                   default=False,
+                   help="<bool>     add delete table if not exists clause.")
+
+   opts.add_option("--file", action="store", dest="usefile",
+                   default=None,
+                   help="<filename> Take each catalog filename from this file.")
+
+   opts.add_option("--translate", action="append", dest="translations",
+                   default=["ALPHAWIN_SKY:ora","DELTAWIN_SKY:odec"],
+                   help="keyname:newname  translate the Sextractor keys to our keys. Eg. ALPHAWIN_SKY:ora")
+
+
+
+   (options, args) = opts.parse_args()
+
+   ourtranslations = {'ALPHA_SKY': 'ora', 'DELTA_SKY' : 'odec'}
+
+   abort = False
+   for p in options.translations:
+      try:
+         k,v = list(map(str.strip,p.split(':')))
+         ourtranslations[k]=v
+      except Exception as e:
+         print("Error parsing translations, use colon or equal sign?", p,file=sys.stderr)
+         abort = True
+
+   sextranslations = copy.deepcopy(sql_keywords)
+   sextranslations.update(ourtranslations)
+
+   autoincrement   = int(options.autoincrement)
+
+   databasename    = options.databasename
+   databasetable   = options.databasetable
+   databaseschema  = options.schema
+
+   if(options.schema is not None):
+      databasetable = "%s.%s" % (options.schema,databasetable)
+
+   sqlname         = options.sqlname
+   deleteclause    = ""
+   if(options.deletetable):
+      deleteclause  = "DROP TABLE IF EXISTS %s; DROP SEQUENCE IF EXISTS %s_sequence;" % (databasetable,databasetable)
+     
+
+   write_header = options.createflag
+
+   ###################################################################
+   #  Permit adding a long list of wordy files and append to args.
+   #  with a side file or piping the names directly into the mix.
+   ###################################################################
+   # sex2psql --file=myfiles.txt ...
+   # ls -1 *cat | sex2psql to bring in even more names
+   newargs         = []
+   mode = os.fstat(sys.stdin.fileno()).st_mode   # a pipe is ready
+
+   if(stat.S_ISFIFO(mode) or stat.S_ISREG(mode)):
+      newargs += loadfiles(sys.stdin)
+
+   if(options.usefile is not None):  # (also) supplied a side file with a list
+      with open(options.usefile) as f:
+         newargs += loadfiles(f)
+
+   for v in args:
+      if('@' in v):
+         pre = ''
+         if('//' in v):
+            pre,v = v.split('//')
+         if('@' in v):
+            _,listname = v.split('@')
+         if(len(listname) == 2):
+            pre,listname = listname
+         with open(listname,'r') as listoffiles:
+            for f in listoffiles:
+               newargs.append(pre+f.strip())
+      else:
+         newargs.append(v)
+
+   args += newargs                   # make sure all requested files can be found.
+   mias = [a for a in args if not os.path.exists(a)]
+   if(len(mias) != 0):
+      for a in mias:
+         print("sex2psql: Missing file |%s|" % (a),file=sys.stderr)
+      abort = True
+
+   if(abort):
+      print("Aborting",file=sys.stderr)
+      sys.exit()
+
+   ###################################################################
+   #  Process all the files. Here we create a class for each file.
+   #  Next we recoincile the row field values. Some cat's may come
+   #  from different default.param runs. Then make the database.
+   ###################################################################
+
+   db = PSQLDatabase(databasename,databasetable,schema=databaseschema,sequencestart=autoincrement)
+   for filename in args:
+      try:
+         s = SCat(filename,translations=sextranslations)
+         db.append(s.compilecat())
+      except:
+         print("Oops bad file encountered, %s" % filename,file=sys.stderr)
+         raise
+
+   if(0):
+      print("Finished loading catalog files",file=sys.stderr)
+
+   db.use_database()
+   if(options.createflag):
+      db.createdb()
+   db.writedb()
+   if( options.q3cflag):
+      db.q3c()

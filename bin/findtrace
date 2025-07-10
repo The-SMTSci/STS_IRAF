@@ -1,0 +1,196 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# (wg-python-fix-pdbrc)
+
+### HEREHEREHERE
+
+from __future__ import print_function
+import sys
+import os
+import optparse
+import numpy as np
+from astropy.io import fits
+
+
+#############################################################################
+#
+#  /home/wayne/bin/findtrace
+#
+#emacs helpers
+# (insert (format "\n# %s " (buffer-file-name)))
+#
+# (set-input-method 'TeX' t)
+# (toggle-input-method)
+#
+# (wg-astroconda3-pdb)      # CONDA Python3
+#
+# (wg-python-fix-pdbrc)  # PDB DASH DEBUG end-comments
+#
+# (wg-python-toc)
+#
+#############################################################################
+__doc__ = """
+
+findtrace [options]  files...
+
+For files with one star spectra, coadd along the dispaxis to make
+a 1-D array containing the brightest parts. If there is tilt, or
+astigmatism the 'trace' will be the band of the spectrum that holds
+the information. If you pad these numbers, you may trim large images.
+
+
+
+"""
+
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+__all__     = ['FindTraceException','FindTrace']   # list of quoted items to export
+
+
+##############################################################################
+# FindTraceException
+#
+##############################################################################
+class FindTraceException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(FindTraceException,self).__init__("FindTrace "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return " FindTrace:" + e.__str__() + "\n"
+
+# FindTraceException
+
+
+##############################################################################
+# FindTrace
+#
+##############################################################################
+class FindTrace(object):
+    """ For a set of matching (not checked!) files -- co-add the images
+    and print the edges of a presumed single trace. This is for spectra.
+    """
+    #__slots__ = [''] # add legal instance variables
+    # (setq properties `("" ""))
+    def __init__(self,filenames,args):                               # FindTrace::__init__()
+        """Initialize this class."""
+        #super().__init__()
+        # (wg-python-property-variables)
+        self.args      = args          # an array of files or @ files
+        self.options   = options       # pass through of the optparse options.
+        self.shapes    = {}            # split out any oddly shaped files
+        self.files     = {}            # remember the file names
+        self.dispaxes  = set()         # help make sure there is only one disp axis value
+        self.ranges    = {}            # the left/right side of the where array
+        self.fitsfiles = []            # the fully expanded fits files from args and @ files.
+        self.dispaxis  = int(options.dispaxis)
+
+    ### FindTrace.__init__()
+
+    def loadfiles(self):                                    # FindTrace.loadfiles()
+        """Given an array of filenames, load the files"""
+        for filename in [a for a in args if 'fit' in a or '@' in a]:
+            prefix,atfile = filename.split("@")
+            if(prefix):
+                prefix,_ = prefix.split("//")
+            else:
+                prefix = ""
+            if('@' in filename):
+                with open(prefix+filename[1:],'r') as f:
+                    for l in f:
+                        self.fitsfiles.append(l.strip())
+            else:
+                self.fitsfiles.append(filename)
+        return self
+
+    ### FindTrace.loadfiles()
+
+    def trace(self):                                        # FindTrace::trace()
+        """From the loaded data, determine the trace. Compress the
+        data along dispaxis into a (NAXIXx,) array."""
+        for filename in self.fitsfiles:
+            with fits.open(filename) as f:
+                if(f[0].header.get('IMAGETYP','object') == 'object'): # assume missing is sci
+                    self.dispaxes.add(f[0].header.get('DISPAXIS',self.dispaxis))
+                    d = f[0].data
+                    self.shapes.setdefault(d.shape,np.zeros_like(d))
+                    self.shapes[d.shape] = self.shapes[d.shape] + d
+                    self.files.setdefault(d.shape,[]).append(filename)
+
+        if(len(self.dispaxes) != 1):
+            raise FindTraceException("More than one dispaxis found")
+
+        daxis = int(self.dispaxes.pop()) - 1   # axis 0 is non-transposed image.
+        ranges = {}
+        sample = f[0].header['NAXIS1']//2
+        for s in self.shapes.keys():
+            d = self.shapes[s].sum(axis=1) # sum along dispersion = 1 axis
+            w = np.where(d > (d.min() * 1.05))
+            self.ranges.setdefault(s,0)
+            ranges[s] = (w[0][0],w[0][-1]) #  "# {} {}".format(w[0][0],w[0][-1])
+            #print(shapes[s].shape, shapes[s].dtype)
+            nf = fits.PrimaryHDU(self.shapes[s])
+            nf.writeto('findtrace.fits',overwrite=True,output_verify='silentfix')
+
+        return self
+
+    ### FindTrace.determinetrace()
+
+    def ranges(self):                                       # FindTrace::ranges()
+        """Determine the ranges, for now assume one trace, and report the edges
+        of the trace range."""
+        return self.ranges # tuples with shapes as keys
+
+    ### FindTrace.ranges()
+
+    def report(self):                                       # FindTrace::report()
+        """Make some kind of report"""
+        for r in self.ranges.keys():
+            #'!ds9 -regions load all findtrace.reg'.format(sample,r[0],sample,r[-1])
+            rng = self.ranges[r]
+            print("# {} {}".format(r[0],r[1]))
+        return self
+    ### FindTrace.report()
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # FindTrace::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("FindTrace - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print('{:20s} ='.format(key),file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+
+    ### FindTrace.debug()
+
+# class FindTrace
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+# HEREHEREHERE
+if __name__ == "__main__":
+    opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+    opts.add_option("--dispaxis", action="store_true", dest="dispaxis",
+                   default="1",
+                   help="<int>     dispaxis.")
+    opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>     be verbose about work.")
+
+    (options, args) = opts.parse_args()
+
+
+    fr = FindTrace(args,options)
+    fr.loadfiles().trace().report()

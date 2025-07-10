@@ -1,0 +1,504 @@
+#!/usr/bin/env python3
+# -*- coding: latin-1; indent-tabs-mode nil -*-
+
+#############################################################################
+#
+#  /home/wayne/Observations/ngc300etc/plot.py
+# (find-file-other-frame "./.pdbrc")
+#
+# (compile (format "python -m py_compile %s" (buffer-file-name)))
+# (compile (format "pydoc3 %s" (buffer-file-name)))
+#
+# (wg-python-fix-pdbrc)
+#
+#
+# emacs helpers (set-background-color "light blue")
+# (wg-python-toc)
+#
+# __doc__ = """
+# __author__  = 'Wayne Green'
+# __version__ = '0.1'
+# def myplot_polyfit(degreex,x,y):
+# def myplot_chebyshev(degree,x,y):
+# if __name__ == "__main__":
+#Backends
+#
+#macosx
+#QtAgg ipympl GTK3Agg GTK4Agg TkAgg nbAgg WebAgg GTK3Cairo GTK4Cairo wxAgg
+#
+#
+# function dds9 { ds9 $1 -region 2010da_Phot.reg -wcs align yes}
+#
+#############################################################################
+import optparse
+import re
+import sys
+import numpy as np
+import matplotlib
+matplotlib.use('TkAgg')
+import matplotlib.pyplot as plt
+#from matplotlib import rc
+#from astropy.io import fits
+import warnings
+np.warnings = warnings
+
+__doc__ = """
+
+/home/wayne/bin/myplot
+
+Simple plotter for psql
+select row_number() over (), flux_iso    from v20sex
+   where vnearby(ora,odec,5,83.68594719 ,-5.561698294 )\g |myplot
+     -t "Raw V1118" --ylabel "Reduced Counts"
+
+
+"""
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+
+myline = re.compile(r'^[+-]+$')
+
+
+##############################################################################
+# polyfit
+#
+##############################################################################
+def myplot_polyfit(degreex,x,y):
+   """Make a poly fit."""
+   coefcount    = degree
+   coefficients = np.polyfit(x, y, coefcount)
+   retcoeffs    = coefficients.copy()
+   #print(f"""myplot_polyfit Coefficients: {coefficients}""")
+   polynomial   = np.poly1d(coefficients)
+   #print(f"""myplot_polyfit Coefficients: {coefficients}""")
+   xs           = np.arange(minx,maxx, 0.002)
+   ys           = polynomial(xs)
+   return (xs,ys,retcoeffs)
+
+# myplot_polyfit
+
+def myplot_chebyshev(degree,x,y):
+   """Make a chebyshev poly fit. Supply the x values."""
+   polynomial = np.polynomial.chebyshev.Chebyshev.fit(x,y,degree,True)
+   xs           = x
+   ys           = polynomial(xs)
+   return (xs,ys)
+
+# myplot_chebyshev
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+
+if __name__ == "__main__":
+   opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+   opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>     be verbose about work.")
+
+   opts.add_option("-i", "--invert",    action="store_true", dest="invertflag",
+                   default=False,
+                   help="<bool>     invert the y axis (magnitudes)")
+
+   opts.add_option("--logy",    action="store_true", dest="logyflag",
+                   default=False,
+                   help="<bool>     y in log scale.")
+
+   opts.add_option("--logx",    action="store_true", dest="logxflag",
+                   default=False,
+                   help="<bool>     x in log scale.")
+
+   opts.add_option("-s", "--separator", action="store", dest="separator",
+                   default=None,
+                   help="<str>      separator character.")
+
+   opts.add_option("-t", "--title", action="store", dest="titleflag",
+                   default="",
+                   help="<str>      title for plot.")
+
+   opts.add_option("-x", "--xcolumn", action="store", dest="xcolumnflag",
+                   default='0',
+                   help="<int>      x column (zero-based).")
+
+   opts.add_option("-y", "--ycolumn", action="store", dest="ycolumnflag",
+                   default='1',
+                   help="<int>      y column (zero-based).")
+
+   opts.add_option("-e", "--errorbars", action="store", dest="errorbarsflag",
+                   default=None,
+                   help="<int>      column for xerr and +1 for yerr (zero-based).")
+
+   opts.add_option("--xlabel", action="store", dest="xlabel",
+                   default='',
+                   help="<str>      y axis lable.")
+
+   opts.add_option("--ylabel", action="store", dest="ylabel",
+                   default='',
+                   help="<str>      y axis lable.")
+
+   opts.add_option("--stddev", action="store", dest="stddev",
+                   default='1.0',
+                   help="<float>    for --stats times this stddev.")
+
+   opts.add_option("--degree", action="store", dest="degree",
+                   default='2',
+                   help="<int>      degree of polynominal fit (<0 for no fit).")
+
+   opts.add_option("--lines", action="store_true", dest="lines",
+                   default=False,
+                   help="<bool>     draw connected graph.")
+
+   opts.add_option("--fit", action="store_true", dest="fitpoly",
+                   default=False,
+                   help="<bool>     fit the polynominal.")
+
+   opts.add_option("--equation", action="store_true", dest="equation",
+                   default=False,
+                   help="<bool>     write an equation to STDOUT.")
+
+   opts.add_option("--figtext", action="store", dest="figtext",
+                   default=None,
+                   help="<str>      Filename with the text.")
+
+   opts.add_option("--grid", action="store_true", dest="gridflag",
+                   default=False,
+                   help="<bool>     add a grid to the plot.")
+
+   opts.add_option("--pdf", action="store_true", dest="pdf",
+                   default=False,
+                   help="<bool>     save the file as pdf, don't plot.")
+
+   opts.add_option("--stats", action="store_true", dest="statflag",
+                   default=False,
+                   help="<bool>     add statistics to graph.")
+
+   opts.add_option("--xmin", action="store", dest="xmin",
+                   default=None,
+                   help="<float>    minimum X value.(eg restrict axis)." )
+
+   opts.add_option("--xmax", action="store", dest="xmax",
+                   default=None,
+                   help="<float>    maximum X value. (eg restrict axis).")
+
+   opts.add_option("--ymin", action="store", dest="ymin",
+                   default=None,
+                   help="<float>    minimum Y value. (eg cold pixel).")
+
+   opts.add_option("--ymax", action="store", dest="ymax",
+                   default=None,
+                   help="<float>    maximum Y value. (eg hot pixel).")
+
+   opts.add_option("--markersize", action="store", dest="markersize",
+                   default='3',
+                   help="<float>    markersize .")
+
+   opts.add_option("--linewidth", action="store", dest="linewidth",
+                   default='1',
+                   help="<float>    linewidth = 1 .")
+
+   opts.add_option("--spectrum", action="store_true", dest="spectrum",
+                   default=False,
+                   help="<bool>     draw spectrum like vertical lines.")
+
+   opts.add_option("--chebyshev", action="store_true", dest="chebyshev",
+                   default=False,
+                   help="<bool>     use chebyshev polynominal of stated degree.")
+
+   opts.add_option("--color", action="append", dest="usercolors",
+                   default=[],
+                   help="<bool>     use chebyshev polynominal of stated degree.")
+
+   (options, args) = opts.parse_args()
+
+   errormsgs      = []            # might add to graph if verbose option set. (unimplemented)
+   msg            = ""
+   subtitle       = ""           # use for polyfits
+   try:
+      msg         = "linewidth"
+      linew       = float(options.linewidth)
+      msg         = "xcolumnflag"
+      xcol        = int(options.xcolumnflag)
+      msg         = "ycolumnflag"
+      ycol        = int(options.ycolumnflag)
+      msg         = "markersize"
+      msg         = "equation"
+      equation    = options.equation             # get the equation bool.
+      markersize  = float(options.markersize)
+      if(options.errorbarsflag is not None):
+         msg  = "errorbarsflag"
+         errx = int(options.errorbarsflag)
+         erry = errx + 1
+      msg         = "degree"
+      degree      = int(options.degree)
+      msg         = "separator"
+      separator   = options.separator
+      coefficents = None
+      figtext     = options.figtext
+
+   except:
+      print("myplot columns must be integers. %s" % msg,file=sys.stderr)  # fix me!
+      raise
+
+   # Get and set the variables for range/value restrictions
+   xmin,xmax,ymin,ymax = [v for k,v in options.__dict__.items() if k in ["xmin","xmax","ymin","ymax"]]
+   restrict = True in map(lambda a: a is not None, [xmin,xmax,ymin,ymax])
+   mixed    = True in map(lambda a: a is     None, [xmin,xmax,ymin,ymax]) # all or none test
+   if(restrict and mixed):
+      mixedmsg  = "Oops one xmin,xmax,ymin,ymax specified, but not all. Will not restrict."
+      errormsgs.append(mixedmsg)
+      #print(mixedmsg,file=sys.stderr)
+
+   # not a thing now.
+   #if(not options.verboseflag):
+   #    warnings.simplefilter('ignore', np.RankWarning)
+
+   rawdata = []
+   if(len(args) == 0 ):
+      args.append(None)  # add None as placeholder for stdin.
+   # open all files, save parts, they must be same shape
+
+   if(options.verboseflag):
+      print("Filenames",args,file=sys.stderr)
+
+   colors = options.usercolors;
+   if(len(colors) == 0):
+      colors.append('black')
+   if(options.verboseflag):
+      print(colors,file = std.error)
+
+   for fidx,filename in enumerate(args):
+      with open(filename,'r') if filename is not None else sys.stdin as f:
+          if(filename is None):
+             filename = 'STDIN'
+
+          cidx = fidx % len(colors)
+          ucolor = colors[cidx]   # allow to rotate around colors.
+          print("ucolor ", ucolor)
+          for l in f:
+             l = l.strip()
+             if(0): print(l),
+             if('#' in l):
+                continue
+             if(l == ''):
+                continue
+             if('row' in l):
+                break
+             if(separator is None):
+                parts = list(map(str.strip,l.split()))
+             else:
+                parts = list(map(str.strip,l.split(separator)))
+             rawdata.append(parts)  # array of arrays.
+
+   rawx        = []
+   rawy        = []
+   rawerrxvals = []
+   rawerryvals = []
+   why         = 0
+   try:
+      if(options.errorbarsflag is not None):
+         for p in rawdata:
+            why = 0
+            rawx.append(float(p[xcol]))
+            rawy.append(float(p[ycol]))
+            why = 1
+            rawerrxvals.append(float(p[errx]))
+            rawerryvals.append(float(p[erry]))
+      else:
+         for p in rawdata:
+            if(options.verboseflag):
+               print("rawdata",p)
+            try:
+               if(':' in p[xcol]):
+                  pparts  = p[xcol].split(':')
+                  p[xcol] = "%f" % (float(pparts[0]) + float(pparts[1])/60.0)
+               rawx.append(float(p[xcol]))
+               rawy.append(float(p[ycol]))
+            except Exception as e:
+               if(options.verboseflag):
+                  print("oops bad conversion",p[xcol],p[ycol],l,file=sys.stderr)
+                  # raise
+   except:
+       print("myplot: bad point float conversion\n", p,file=sys.stderr)
+       print(["Bad data point?","bad/missing error bar data?"][why],file=sys.stderr)
+       raise
+
+   # havent blown up yet!
+   #rc('text',usetex=True)             # use latex in the plot
+   #rc('font',family='serif')           # use latex in the plot
+
+   if(options.verboseflag):
+      print("rawx",len(rawx),"rawy",len(rawy),file=sys.stderr)
+
+   # make the imput data into np data structure
+   x = np.array(rawx)                  # convert to np for those great
+   y = np.array(rawy)                  # tools
+
+   # clip the x and y values as needed.
+   # don't bother if there are no limits provided.
+   ylwhere,yhwhere = None,None   # mark positions later
+   if(restrict):
+      lowx,highx = x.min(),x.max()
+      lowy,highy = y.min(),y.max()
+      if(xmin is not None):
+         lowx = float(xmin)            # the options
+      if(xmax is not None):
+         highx = float(xmax)
+      if(ymin is not None):
+         lowy = float(ymin)            # the options
+      if(ymax is not None):
+         highy = float(ymax)
+
+      # essentially a zoom feature
+      xlw    = np.where(x <= lowx)
+      xhw    = np.where(x >= highx)
+      xlwidx = xlw[0][-1]
+      ylwidx = xhw[0][0]
+      if(options.verboseflag):
+         print("xlw,xlwidx",xlw,xlwidx)
+         print("----------->",xlwidx,ylwidx,"   ",lowx,highx,lowy,highy,x.shape,y.shape)
+      x      = x[xlwidx:ylwidx]        # subset the x,y part
+      y      = y[xlwidx:ylwidx]        # remember indexes not values.
+
+      #x = x[xwhere]
+      if(ymax):
+         yhwhere = np.where(y >= highy)# force low and high water marks.
+         y[yhwhere] = lowy
+      if(ymin):
+         ylwhere = np.where(y <= lowy)
+         y[ylwhere] = lowy
+
+   # x,y ready for more tests.
+   if(options.verboseflag):
+      print("DEBUG:",x.shape,y.shape,file=sys.stderr)
+
+   if(options.errorbarsflag):
+      errxvals = np.array(rawerrxvals)
+      erryvals = np.array(rawerryvals)
+
+   ###################################################################
+   #  Here we generate the plot. Scatter plot the values, and
+   #  fit a 2nd degree polynominal (SNe is a decay)
+   ###################################################################
+   col          = 0  # 0=SNe 2=Sky1 3=Sky2
+   py           = y  # [:,0] # / y[:,1]   # ratio to the Sky1
+
+   try:
+      minx,maxx    = x.min(),x.max()
+   except Exception as e:
+      print("Oops error",e,file=sys.stderr)
+      sys.exit(1)
+
+   if(options.invertflag):
+      plt.gca().invert_yaxis()              # Use for star magnitudes
+
+   if(0): print("x,erryvals",x.shape,erryvals.shape,file=sys.stderr)
+   #plt.rc('text',usetex='True')
+   print(f"x {x.shape}, py {py.shape}")
+   if(options.lines):
+      plt.plot(x,py,linewidth=linew,color=ucolor)        # plot the points markersize (ms)
+   else:
+      plt.plot(x,py,'.',ms=markersize,color=ucolor)        # plot the points markersize (ms)
+   # if we reset some value, put a marker along the bottom in blue
+
+   if(ylwhere is not None):
+      plt.plot(ylwhere,lowy,'r|',ms=3*markersize,color='b')
+   if(yhwhere is not None):
+      plt.plot(yhwhere,lowy,'r|',ms=3*markersize,color='b')
+
+   if(options.errorbarsflag):
+      ax = plt.gca()
+      ax.errorbar(x,py,marker='x',color=ucolor,yerr=erryvals,linewidth=1,fmt='none',capsize=3)
+
+   if(options.fitpoly):
+      if(options.chebyshev):
+         subtitle = "Chebyshev Degree = %d" % degree
+         polytype = "Chebyshev"
+      else:
+         subtitle = "Polynomial Degree = %d" % degree
+         polytype = "Polynomial"
+#      coefcount    = degree
+#      coefficients = np.polyfit(x, py, coefcount)
+#      polynomial   = np.poly1d(coefficients)
+#      xs           = np.arange(minx,maxx, 0.002)
+#      ys           = polynomial(xs)
+      #xs,ys = myplot_polyfit(degree,x,y)
+      if(options.chebyshev):
+         xs,ys = myplot_chebyshev(degree,x,y)
+      else:
+         xs,ys,coefficents = myplot_polyfit(degree,x,y)
+         print(f"""coefficents {coefficents}""")
+
+      plt.plot(xs,ys,linewidth=1,color='red')    # plot the polynominal fit
+      #lx,ly  = myplot_chebyshev(5,x,y)
+      #plt.plot(lx,ly,linewidth=2,color='blue')    # plot the polynominal fit
+
+   title = options.titleflag
+
+   if(options.xlabel != ''):
+      plt.xlabel(options.xlabel)
+
+   if(options.ylabel != ''):
+      plt.ylabel(options.ylabel)
+
+   if(options.statflag):
+      mean   = np.mean(py)
+      sigma  = float(options.stddev)
+      stddev = sigma * np.std(py)
+      plt.plot([minx,maxx],[mean,mean],color='blue',linewidth=1)
+      plt.plot([minx,maxx],[mean+stddev,mean+stddev],color='blue',linewidth=1,linestyle='-.')
+      plt.plot([minx,maxx],[mean-stddev,mean-stddev],color='blue',linewidth=1,linestyle='-.')
+      if(title == ""):
+         subtitle = "%s degree=%d\nMean %.3f Stddev %.3f sigma %3.f" % (polytype,degree,mean,stddev,sigma)
+   else:
+      if(title == "" and options.pdf is False and options.fitpoly is True):
+         subtitle = "Polyfit degree=%d" % degree
+
+   if(not options.chebyshev and equation is True and coefficents is not None):
+      eq       = ""
+      order    = len(coefficents) - 1
+      subtitle += "\n"
+      plus     = ""                   # needed for second+ terms
+      for i,c in enumerate(coefficents):
+         #term     = f"{c:.6f}"      # reasonable precision, not exp notation
+         #parts    = list(map(str.strip,term.split('.')))
+         #pc       = int(parts[0]) + float('.'+parts[1])
+         subtitle += f"""{plus} {c:.4E}"""
+         if(order - i > 0):
+            expt = f"""$^{order-i}$"""
+            subtitle += f"""X{expt}"""
+         plus = " +"
+      #print(f"""subtitle {subtitle}""")
+
+
+   plt.suptitle(title)
+   if(subtitle != ''):
+      plt.title(subtitle)
+
+   if(options.gridflag):
+      plt.grid()
+
+   if(options.logyflag):
+      plt.yscale('log')
+
+   if(options.logxflag):
+      plt.xscale('log')
+
+   if(figtext is not None):
+      if(os.path.fileexists(figtext)):
+         try:
+            text = open(figtext,'r').read()
+            plt.figtext(.1,.1,figtext,fontsize=8)
+         except Exception as e:
+            print(f"Figtext file {figtext} issue.\ne.__str__()", file = sys.stdout)
+
+   if(options.pdf):
+      if(title == ""):
+         title = filename
+         plt.title(title)
+      outname = '.'.join(filename.split('.')[:-1])+".pdf"
+      plt.savefig(outname,bbox_inches='tight')
+   else:
+      plt.show()

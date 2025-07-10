@@ -1,0 +1,823 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# ./trim4 -s "[2471:6280,1470:2642]" Flat_10s_20240102_083648m0.fits
+#
+# (wg-python-fix-pdbrc)
+#
+# (compile (format "python -m py_compile %s" (buffer-file-name)))
+# (compile (format "pydoc3 %s" (buffer-file-name)))
+#
+# (wg-python-toc)
+#
+# # __doc__ = """
+# # __author__  = 'Wayne Green'
+# # __version__ = '0.1'
+# # __all__     = ['IRAFSection','IRAFSectionException','TrimFITSFile','TrimFITSFileException']
+# # if __name__ == "__main__":
+# __doc__ = """
+# __author__  = 'Wayne Green'
+# __version__ = '0.1'
+# __all__     = ['IRAFSection','IRAFSectionException','TrimFITSFile','TrimFITSFileException']
+# class IRAFSectionException(Exception):
+#     def __init__(self,message,errors=None):
+#     @staticmethod
+#     def __format__(e):
+# class IRAFSection(object):
+#     def __init__(self,header = {}, secdef="[*,*]"):         # IRAFSection.__init__()
+#     def secslice(self):                                     # IRAFSection::secslice
+#     def compile(self,secdef=None):                          # IRAFSection::compile()
+#            class in instantiated:
+#     @staticmethod
+#     def compilesec(secstr : str, naxes=[1,2,3]) -> ():      # IRAFSection.compilesec() static
+#         def parse(tok : str,naxis = None):
+#     @staticmethod
+#     def sectest(secstr : str):                              # IRAFSection.sectest()
+#     def __str__(self):                                      # IRAFSection.__str__()
+#     def debug(self,msg="",skip=[],os=sys.stderr):           # IRAFSection::debug()
+# def __regression__():
+# class TrimLogException(Exception):
+#     def __init__(self,message,errors=None):
+#     @staticmethod
+#     def __format__(e):
+# class TrimLog(object):
+#     #__slots__ = [''] # add legal instance variables
+#     def __init__(self,                                      # TrimLog::__init__()
+#     def open(self):                                         # TrimLog.open()
+#     def close(self, msg : str):                             # TrimLog.close()
+#     def write(self):                                        # TrimLog.write()
+#     def debug(self,msg="",skip=[],os=sys.stderr):           # TrimLog::debug()
+# class TrimFITSFileException(Exception):
+#     def __init__(self,message,errors=None):
+#     @staticmethod
+#     def __format__(e):
+# class TrimFITSFile(object):
+#     def __init__(self,pargs,poptions={}):                   # TrimFITSFile::__init__()
+#     def openlog(self):
+#     def closelog(self):                                     # TrimFITSFile.close
+#     def log(self,msg : str):                                # TrimFITSFile.log()
+#     def getfilenames(self):                                 # TrimFITSFile.getfilenames()
+#     def compile(self):                                      # TrimFITSFile.compile()
+#     def updateheader(self,newh,newslice,filename):          # TrimFITSFile.updateheader()
+#     def debug(self,msg="",skip=[],os=sys.stderr):           # TrimFITSFile::debug()
+# if __name__ == "__main__":
+#
+#
+#
+#
+# 2024-02-20T16:41:43-0700 - added a log capability. ~/iraf/trim.log
+### HEREHEREHERE
+from __future__ import print_function
+if(0): import pdb   # pdb.set_trace()
+import os
+import optparse
+import sys
+import re
+import numpy as np
+#import pandas as pd
+import astropy
+from astropy.io import fits
+import time
+
+#############################################################################
+#
+#  /bin/trim
+# (wg-python-toc)
+#
+# __doc__ = """
+# __author__  = 'Wayne Green'
+# __version__ = '0.1'
+# __all__     = ['IRAFSection','IRAFSectionException','TrimFITSFile','TrimFITSFileException']
+# class IRAFSectionException(Exception):
+#     def __init__(self,message,errors=None):
+#     @staticmethod
+#     def __format__(e):
+# class IRAFSection(object):
+# def t_INT(t):
+# def t_error(t):
+# def t_newline(t):
+#     def __init__(self,header = {}, secdef="[*,*]"):         # IRAFSection.__init__()
+#     def secslice(self):                                     # IRAFSection::secslice
+#     def compile(self,secdef=None):                          # IRAFSection::compile()
+#            class in instantiated:
+#     @staticmethod
+#     def compilesec(secstr : str, naxes=[1,2,3]) -> ():      # IRAFSection.compilesec() static
+#         def parse(tok : str,naxis = None):
+#     @staticmethod
+#     def sectest(secstr : str):                              # IRAFSection.sectest()
+#     def __str__(self):                                      # IRAFSection.__str__()
+#     def debug(self,msg="",skip=[],os=sys.stderr):           # IRAFSection::debug()
+# def __regression__():
+# class TrimFITSFileException(Exception):
+#     def __init__(self,message,errors=None):
+#     @staticmethod
+#     def __format__(e):
+# class TrimFITSFile(object):
+#     def __init__(self,pargs,poptions={}):                   # TrimFITSFile::__init__()
+#     def getfilenames(self):
+#     def compile(self):
+#     def updateheader(self,newh,newslice,filename):
+#     def debug(self,msg="",skip=[],os=sys.stderr):           # TrimFITSFile::debug()
+# if __name__ == "__main__":
+#
+#
+#
+#############################################################################
+__doc__ = """
+
+bin/trim [options] files...
+
+"-f", "--force"   <bool>           force -s over env; env over file
+"-p", "--prefix"  <str>            prefix string (t_).
+"-o", "--output"  <bool>           write a new file..
+"-s", "--section" <[X1:X2,Y1:Y2]>  section in IRAF/FITS coordinates.
+"-v", "--verbose" <bool>           be verbose about work.
+"-a", "--addwcs"  <bool>           add a WCS logical->physical. Breaks imexamine.
+
+Files are the filenames. An IRAF 'at' file, "@l.l" for example, may
+supply a textual list of file names. For a filename that contains
+the characters '[\\[:\\],] the file name will be ASSUMED to be the section.
+This provision is made because Python does not honor a closed stdin
+in the way unix filteres work.  Thus the unix command:
+
+    !findtrim refflat.fits | xargs trim @l.l -s
+may work as a one-liner within PyRAF. This forces the section output
+to appear as an argument.
+
+IRAF uses a section notation that consists of comma separated ranges
+of start,end values along axes described by NAXIS,
+NAXISn... keywords. In order of n, the ranges come in three flavors:
+
+   start:end    - using FORTRAN indexing, starting at 1
+   *            - the entire range
+   -*           - (minus splat) to reverse the axis's data ordering.
+
+We report -* as -1, consistent with numpy.
+
+There are no white spaces within the a section's text.
+
+This program takes a given section and trims all files supplied as
+parameters to the same size. It adds a prefix, default of "t_" but
+user defined with the -p option. The program updates the fits header
+to include the TRIMSEC and original filename.
+
+A affilated program, findtrim, has been written to use a spectrographic
+flat or cal to make an determination of the section of a set of files to
+trim.
+
+The specified trim section may be in the file, specified by user
+via the -s switch or generically by an 'export TRIMSEC='[600:*,550:750]'
+or occur in the file.
+
+Under normal usage: No -s switch will fall back to the TRIMSEC in the
+file, next fall back to the env then report a failure. The '-s' always
+takes precedence.
+
+The -f switch force env over any file definition. In essence rewrites
+the TRIMSEC keyword. You can always leave the -s switch off -- but if
+present as a paramter the -f will take it as last resort.  In the
+absence of TRIMSEC in the header, -s or env trim will skip the file.
+
+The X and Y coordintes are 1s based. A splat ('*') may be used
+to stand in for the values,
+
+0:1234      everything   upto/including 1234
+150:*       start at 150 upto/including end
+[*,500:600] all x, but 500 upto/including 600 for y.
+
+Triming cubes is not implemented.
+
+TRIMSEC is the part of the image to keep.  It may be in a header, or
+in the local envrionment.  Inside PyRAF the Python
+os.environ['TRIMSEC'] = '[*,185:1120]' will do the trick. This in turn
+writes the TRIMSEC into the trimmed file's headers.  Pay attention to
+numpy indexing!  All files are presumed to be as big or bigger than
+the section.
+
+Note: Import you may this program for access to the classes herein.
+
+ls -1 *Flat*.fits > goodflats.l
+ls -1 *fits > totrim.l
+trim -s "\"$(findtrim @goodflats.l\"" @totrim.l
+
+should do the trick for you. Or something like:
+
+ls -1 *fits | xargs trim -s "\"$(findtrim @goodflats.l\""
+
+From: A User's Introduction to the IRAF Command Language, Version 2.3
+Peter MB Shames, Doug Tody 11 Aug 1986...
+
+image                    whole image
+image[]                  whole image
+image[i,j]               the pixel value (scalar) at [i,j]
+image[,]                 whole image, two dimensions
+image[,-]                flip y-axis
+image[,,b]               band B of three dimensional image
+image[,:s]               subsample in y by S  (stride)  Numpy [::s]
+image[,l]                line L of image
+image[c,]                column C of image
+image[i1:i2,j1:j2]       subraster of image
+image[i1:i2:sx,j1:j2:sy] subraster with subsampling
+
+This code doesn't quite satisfy all the above definitions. 2024-01-07T21:03:59-0700
+
+"""
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+__all__     = ['IRAFSection','IRAFSectionException','TrimFITSFile','TrimFITSFileException']
+
+
+##############################################################################
+# IRAFSectionException
+#
+##############################################################################
+class IRAFSectionException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(IRAFSectionException,self).__init__("IRAFSection "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return " IRAFSection: {}\n".format(e.__str__())
+# IRAFSectionException
+
+##############################################################################
+# IRAFSection
+#
+##############################################################################
+class IRAFSection(object):
+    """Given a string with an IRAF section definition, return a tuple np.slices to
+    handle operations. The goal is to make two slices 1 for X and one for
+    Y.
+
+    [X1:X2,Y1:Y2] with wildcard character of '*'.
+
+    The section definitions show up as FITS keywords for DATASEC,
+    TRIMSEC, BIASSEC etc...
+
+    This boils down to a X subsection and Y subsection, the
+    wildcard can be START:END or * where * becomes
+    1:NAXISn.
+
+    Spaces are not permitted, zero is not permitted IRAF uses
+    FORTRAN indexing starting at 1.
+
+    """
+
+    # IRAFSection Class definitions.
+    _clean     = re.compile(r'["\'\s[\]]+')  # PDB -DEBUG
+    _numberre  = re.compile(r'\d+')
+    _secentry  = re.compile(r'([*])|(-[*])|([0-9]+)')
+    _secsub    = re.compile(r'[\[\] ]')
+
+    def __init__(self,header = {}, secdef="[*,*]"):         # IRAFSection.__init__()
+        """
+           The IRAF section wildcard is *
+           its from:to inclusive. (Unlike numpy where the end is one more
+              than the index needed.
+           * *:10  10:* are the *:* acceptable forms.
+           A leading "-" will transpose               (unimplemented)
+           More than one section field for cubes etc. (unimplemented)
+        """
+        self.secdef = self._clean.sub('',secdef)  # clear typo spaces to be sure
+        self.header = header
+        self.naxis1 = header.get('NAXIS1',None)
+        self.naxis2 = header.get('NAXIS2',None)
+        self.slicex = slice(0,0)                  # default slices
+        self.slicey = slice(0,0)
+        self.compile()
+
+    ### IRAFSection.__init__()
+
+    def secslice(self):                                     # IRAFSection::secslice
+        """return a proper slice"""
+        #print(f"slicex={self.slicex} ,slicey={self.slicey}")
+        return (self.slicex, self.slicey)
+
+    ### IRAFSection.secslice
+
+    def compile(self,secdef=None):                          # IRAFSection::compile()
+        """Compile the local one, or replace with one established when
+           class in instantiated:
+               ..., secdef='[*,*]'
+           set up the parts and slices in numpy format
+        """
+
+        try:
+            if(secdef is None):
+                secdef = self.secdef
+        except Exception as e:
+            self.debug()
+            raise IRAFSectionException(f"IRAFSection.compile: Missing a section definition.")
+
+        res = IRAFSection.compilesec(secdef,naxes=[self.naxis1,self.naxis2])
+        if(res is not None):
+            self.slicex = res[1]  # slice(parts1[0],parts1[1])   data is in np index form
+            self.slicey = res[0]  # slice(parts2[0],parts2[1])
+        else:
+            raise IRAFSectionException(f"IRAFSection.compile Unrecognized section {secdef}.")
+
+    ### IRAFSection.compile()
+
+    @staticmethod
+    def compilesec(secstr : str, naxes=[1,2,3]) -> ():      # IRAFSection.compilesec() static
+        """Break iraf sections into slices, and return a tuple of
+        slices if legal section, or None.
+        A tuple with -1 as the first member means to reverse (not implemented) the operation.
+        Included for completeness with IRAF.
+        """
+
+        def parse(tok : str,naxis = None):
+            """Parse a token and return tuple of the token
+            and whats left"""
+            if(tok[0] == '*'):
+                return (naxis,tok[1:])
+            if(tok[0] == '-'):
+                if(tok[1] == '*'):
+                    return(-1,tok[2:])
+                raise IRAFSectionException(f"IRAFSection.compileslice.parse bad input {tok}")
+            m = IRAFSection._numberre.match(tok)
+            if(m is not None):
+                if(':' in tok):
+                    return(m[0],tok[len(m[0])+1:])
+                else:
+                    return(m[0],tok[len(m[0]):])
+            raise IRAFSectionException(f"IRAFSection.compileslice.parse bad input {tok}")
+
+        ### IRAFSection.compileslice.parse()   compileslice('1234') compileslice('*') compileslice('-*')
+        slices = []
+        parts  = secstr.split(',')   # may be more than 2.
+        sp1    = sp2 = None
+        for i,p in enumerate(parts):
+            sp1,p = parse(p,naxes[i])
+            if(p != ''):
+                sp2,p = parse(p,naxes[i])
+            if(p != ''):
+                raise IRAFSectionException(f"Failed to parse {parts}")
+            slices.append(slice(int(sp1),int(sp2)))    # PDB-DEBUG
+
+        return tuple(slices)
+
+        ### IRAFSection.compilesec.compileslice()
+
+    ### IRAFSection.compilesec()
+
+    @staticmethod
+    def sectest(secstr : str):                              # IRAFSection.sectest()
+        """See if string matches that of a string"""
+        parts = IRAFSection._secsub('',secstr).split(',')
+        ret = True
+        for p in parts:
+            ret &= (_secentry.match(p) != None)    # all must be true.
+        return ret
+
+    ### IRAFSection.sectest()
+
+    def __str__(self):                                      # IRAFSection.__str__()
+        """Convert the slicex and slicey into a TRIMSEC format"""
+        ret = "[{}:{},{}:{}]".format(self.slicex.start+1, self.slicex.stop+1, # add back in the 1
+                                     self.slicey.start+1, self.slicey.stop+1)
+        return ret
+
+    ### IRAFSection.__str__()
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # IRAFSection::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print(("IRAFSection - %s " % msg),file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print('{:20s} ='.format(key),file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+
+    ### IRAFSection.debug()
+
+# class IRAFSection
+
+##############################################################################
+# __regression__
+#
+##############################################################################
+def __regression__():
+    """Regression tests, a reak hack here"""
+    tsec = [ '[*,*]','[10:100,20:200]',  '[*:100,20:*]', '[*,*:300]' ]
+    header = {'NAXIS1':1000, 'NAXIS2' : 2000}
+    d = np.ones((2000,1000)).T
+    for i,t in enumerate(tsec):
+        print("__regression__ testing {}".format(t))
+        s = IRAFSection(t,header)
+        refd = d[s.secslice()]
+        print("__regression__ ",s," ",s.secslice(),refd.shape)
+
+# __regression__
+
+##############################################################################
+# TrimLogException
+#
+##############################################################################
+class TrimLogException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(TrimLogException,self).__init__("TrimLog "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return f" TrimLog: {e.__str__()}\n"
+# TrimLogException
+
+##############################################################################
+# TrimLog - Simple log file. Send f"" strings is fine.
+#
+##############################################################################
+class TrimLog(object):
+    """ A logfile.
+        open   - open            the logfile
+        close  - close           the logfile
+        write  - send message to the logfile
+        debug  - dump internals
+    """
+    #__slots__ = [''] # add legal instance variables
+    # (setq properties `("" ""))
+    def __init__(self,                                      # TrimLog::__init__()
+                 filename=os.getenv("HOME")+"/iraf/trim.log"):
+        """Initialize this class."""
+        #super().__init__()
+        # (wg-python-property-variables)
+        try:
+            self.filename = filename
+            self.log      = None                # filehandle is None if not used
+            self.open()
+        except Exception as e:
+            print(f"TrimLog.__init__() error {filename}")
+
+    ### TrimLog.__init__()
+
+    def open(self):                                         # TrimLog.open()
+        """If the declared filename is valid, and self.log is None,
+           open the file.
+        """
+        if(self.filename is not None and self.log is None):      # open the file, if name is given
+            self.log = open(self.filename,'w')
+        else:
+            raise TrimLogException(f"Unable to open {self.filename}")
+        return self
+
+    ### TrimLog.open()
+
+    def close(self, msg : str):                             # TrimLog.close()
+        """Close the log fh if opened"""
+        if(self.log is not None):
+            self.log.close()
+
+        return self
+
+    ### TrimLog.close()
+
+    def write(self):                                        # TrimLog.write()
+        """write to log if open"""
+        if(self.log is not None):
+            print(msg,file=self.log)
+
+        return self
+
+    ### TrimLog.write()
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # TrimLog::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("TrimLog - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print(f'{key:20s} =',file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+
+        return self
+
+    ### TrimLog.debug()
+
+# class TrimLog
+
+##############################################################################
+# TrimFITSFileException
+#
+##############################################################################
+class TrimFITSFileException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(TrimFITSFileException,self).__init__("TrimFITSFile "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return "TrimFITSFile: {}\n.format(e.__str__())"
+
+# TrimFITSFileException
+
+##############################################################################
+# TrimFITSFile
+#
+##############################################################################
+class TrimFITSFile(object):
+    """ Trim a fits file.
+    _options mimics the options that may occur.
+    """
+
+    _secsub    = re.compile(r'[\[\] ]')
+    _options = { "force"        : False,      # bool
+                 "logfile"      : "logfile",  # str
+                 "prefix"       : "t_",       # str
+                 "section"      : None,       # bool
+                 "output"       : False,      # bool
+                 "addwcs"       : False,      # bool
+                 "verboseflag"  : False       # bool
+               }
+
+    def __init__(self,pargs,poptions={}):                   # TrimFITSFile::__init__()
+        """Args are the non-switch arguments, presumed to be filenames,
+        poptions is the options structure containing the switches.
+        """
+        msg            = ""                                         # bread crumb trail
+        if(len(poptions.keys()) == 0):
+            poptions = TrimFITSFile._options                        # pick up default options
+        tmpsec = poptions.get('section',None)                       # get the option or none
+        if(tmpsec == None):
+            if( 'TRIMSEC' not in os.environ): # PDB - DEBUG
+                msg = "TrimFITSFile: No idea for trimsection use environment, or set options.section.\n"
+            else:
+                tmpsec = os.getenv('TRIMSEC')
+        if(len(args) == 0):
+            msg += "TrimFITSFile: No files given.\n"
+
+        self.args           = pargs                                 # list of files or sources
+        self.options        = poptions;                             # call from main with options.__dict__
+        self.usection       = self.options.get('section',None)      # user supplied section
+        self.filesection    = []                                    # accumulate all cases of filenames like sec
+        self.envsection     = os.getenv('TRIMESEC')                 # Take -s over env var.
+        self.sectionchoices = [self.usection, self.envsection]      # remember both
+        self.files          = []                                    # allow at-files with prefix concat
+        self.verboseflag    = self.options.get('verboseflag',False)
+        self.prefix         = self.options.get('prefix',None)
+        self.force          = self.options.get('force',None)
+        self.convdate       = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) # when we did these trims
+        self.filecount      = 0                                     # keep track of count of candidates
+        if(self.usection is None):
+            self.usection = os.getenv('TRIMESEC')                   # check for environment variable
+        self.section        = None                                  # instance global
+        self.logfilename    = self.options.get('filename',os.getenv("HOME")+"/iraf/trim.log")
+        self.logfile        = None
+        try:
+            self.logfile     = TrimLog(self.logfilename)                     # open the logfile
+        except Exception as e:
+            raise TrimFITSFileException(f"Error opening logfile {self.logfilename}")
+
+        # TRIMSEC may be in the files...
+        if(msg != ""):
+            raise  TrimFITSFileException(msg)
+
+    ### TrimFITSFile.__init__()
+
+    def openlog(self):
+        """Open the logfile"""
+        if(self.logfile is None):
+            self.logfile.open(self.logfilename)
+        return self
+
+    ### TrimFITSFile.openlog()
+
+    def closelog(self):                                     # TrimFITSFile.close
+        """If open close"""
+        if(self.logfile is not None):
+            self.logfile.close()
+            self.lofileg = None
+
+        return self
+
+    ### TrimFITSFile.close()
+
+    def log(self,msg : str):                                # TrimFITSFile.log()
+        """Open the logfile"""
+        try:
+            self.logfile.write(msg)
+        except Exception as e:
+            raise TrimFITSFileException(f"Error logging {msg} to {self.logfilename}")
+
+        return self
+
+    ### TrimFITSFile.log()
+
+    def getfilenames(self):                                 # TrimFITSFile.getfilenames()
+        """From the args, get the filenames. If the -s [..] section
+        was used, then v will not see anything remotely like a section.
+        If the case of findtrim testflat.fits | xargs trim @l.l
+        is used, with no trailing -s then we will accept that section
+        definition for a minute."""
+        for v in self.args:
+            if(TrimFITSFile._secsub.search(v)):          # see if a file looks more like a section
+                self.filesection.append(v)
+            if('@' in v):
+                pre = ""
+                if("//" in v):
+                    pre,v = v.split('//')
+                if('@' in v):
+                    _,listname = v.split('@')
+                if(len(listname) == 2):
+                    pre,listname = listname
+                with open(listname,'r') as listoffiles:
+                    for f in listoffiles:
+                        self.files.append(pre+f.strip())
+            else:
+                self.files.append(v)
+
+        return self
+
+    ### TrimFITSFile.getfilenames()
+
+    def compile(self):                                      # TrimFITSFile.compile()
+        """Do the actual work.
+        Make sure NAXIS is 2 -- an image file
+        We will support * as a filename, and attempt to glob.
+        Be careful, * (splat) is a legitimate section wildcard.
+        """
+
+        newfiles = [] # PDB - DEBUG
+        for filename in self.files:                                 # take care of wild cards...
+            if('*' in filename):                                    # ... more for pdb.
+                import glob
+                newfiles = newfiles + glob.glob(filename)
+            else:
+                newfiles.append(filename)
+
+        self.files = newfiles   # PDB -DEBUG
+
+        for filename in self.files:
+            hints = []
+            if(self.options.get('verboseflag')):
+                print("TrimFITSFile.compile Processing {}".format(filename))
+            try:
+                hint             = f"Opening file {filename}"             # PDB -DEBUG
+                hints.append(hint)
+                self.section     = None
+                with fits.open(filename) as f:                 # open the fits file
+                    d            = f[0].data                   # 'T'ranspose into IRAF order (zero based!)
+                    h            = f[0].header                 # grab header naxis{1,2}
+                hint             = "Critical checks:"
+                hints.append(hint)
+                if(h['NAXIS'] != 2):
+                    raise  IRAFSectionException(f"{filename} Only 2D files will be trimmed")
+                #if(self.verboseflag) : print(hint,self.sectionchoices)
+                mysection        = [x for x in self.sectionchoices if x is not None] # choose the slice to use
+                #if(self.verboseflag) : print(f"hint={hint}, section to use = {mysection}")
+                hint             = "Using force"
+                hints.append(hint)
+                if(self.force):
+                    mysection.reverse()                        # reverse choices
+                use_section      = mysection[0]
+                #if(self.verboseflag) : print(f"use_section = {use_section}")
+                hint             = "Getting section"
+                hints.append(hint)
+                self.section     = IRAFSection(h,use_section)  # brew up a value may be whole image
+
+                hint             = f"Subsection of image {self.usection}"
+                hints.append(hint)
+                newslice         = self.section.secslice()          # PDB - DEBUG
+                #if(self.verboseflag) : print(f"newslice={newslice}")
+                newd             = d[newslice]
+
+                #if(self.verboseflag) : print(f"trimmed shape {newd.shape} slice={newslice}")
+
+                outname          = self.prefix + filename
+                # fix up the header.
+                hint = "Allocating FITS file with data shape={d.shape}"   # PDB- DEBUG
+                hints.append(hint)
+                reshaped         = newd
+
+                hdu              = fits.PrimaryHDU(reshaped)       # transpose back to FITS
+                newh             = hdu.header                  # astropy.io.fits.header.Header
+                #if(self.verboseflag) : print(f"New header: {newh}")
+                if(self.verboseflag) : print(f"{filename}, reshaped {reshaped.shape}")
+                hint = "Adding a few descriptions"             # PDB-DEBUG
+                hints.append(hint)
+                newh['ORIGNAME'] = (f"{filename}"     , "")     # keep this card short
+                newh['TRIMSEC']  = (f"{self.section}" , "Section  of original image")
+                newh['TRIMDATE'] = (self.convdate     , "date of trim operation")
+
+                if(self.options['addwcs']):
+                    if(self.verboseflag) : print(f"Adding wcs {self.options['addwcs']}")
+                    self.updateheader(newh,newslice,filename)            # add the wcs info to new header.
+                hint = "Updating the header"
+                hints.append(hint)
+                cardcount = 0
+                for c in h.cards:                              # PDB -DEBUG
+                    if(c[0] not in newh):                      # c[0] is keyword
+                        newh.append(c)
+                        cardcount  += 1
+                hint = f"Appended {cardcount} cards\nhdu.writeto()"   # PDB - DEBUG
+                hints.append(hint)
+                fits.writeto(outname,newd,header=newh,output_verify='silentfix',overwrite=True)
+                if(self.verboseflag):
+                    print(f"TrimFITSFile.compile Wrote {outname}",file=sys.stderr)
+                self.filecount += 1
+
+            except Exception as e:
+                #self.debug()
+                raise TrimFITSFileException(f"trim error: file={filename} hint={hint}\n{e.__str__()}")
+
+        return self
+
+    ### TrimFITSFile.compile()
+
+    def updateheader(self,newh,newslice,filename):          # TrimFITSFile.updateheader()
+        """Add the wcs to the emerging new file."""
+        if(1):
+            newh['WAT0_001'] = ('system=physical')        # toss in a logical IMAGE WCS
+            newh['WAT1_001'] = ('wtype=linear')
+            newh['WAT2_001'] = ('wtype=linear')
+            newh['LTV1']     = (- newslice[0].start  , "Lower X offset") # back to IRAF
+            newh['LTV2']     = (- newslice[1].start  , "Lower Y offset") # remember .T above
+            newh['LTM1_1']   = (1.0                  , "Scale X")
+            newh['LTM2_2']   = (1.0                  , "Scale Y")
+        return self
+
+    ### TrimFITSFile.updateheader()
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # TrimFITSFile::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("TrimFITSFile - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print('{:20s} ='.format(key),file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+
+    ### TrimFITSFile.debug()
+
+# class TrimFITSFile
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+# HEREHEREHERE
+if __name__ == "__main__":
+    opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+    opts.add_option("-f", "--force", action="store_true", dest="force",
+                   default=False,
+                   help="<bool>     force -s over env over file.")
+
+    opts.add_option("-l", "--logfile", action="store", dest="logfile",
+                   default=os.getenv("HOME") + "/trim.log",
+                   help="<str>     open and use logfile [log.txt]")
+
+    opts.add_option("-p", "--prefix", action="store", dest="prefix",
+                   default='t_',
+                   help="<str>     prefix string (t_).")
+
+    opts.add_option("-s", "--section", action="store", dest="section",
+                   default=None,
+                   help="<[X:X,Y:Y]>     section in FITS IRAF/coordinates.")
+
+    opts.add_option("-o", "--output", action="store_true", dest="output",
+                   default=False,
+                   help="<bool>     write a new file..")
+
+    opts.add_option("-w", "--wcs", action="store_true", dest="addwcs",
+                   default=False,
+                   help="<bool>     write a WCS into the header.")
+
+    opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>     be verbose about work.")
+
+    (options, args) = opts.parse_args()
+
+    trimsec               = '[1140:6200,1800:2500]'
+    os.environ['TRIMSEC'] = trimsec
+
+    ret = 0  # PDB-DEBUG
+    try:
+        app = TrimFITSFile(args,options.__dict__)
+        app.getfilenames().compile()
+    except Exception as e:
+        #if(options.verboseflag):
+        #    print(e,file=sys.stderr)
+        #app.debug(skip=['args','files'])
+        raise #e;
+        ret = 1
+    sys.exit(ret)

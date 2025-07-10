@@ -1,0 +1,327 @@
+#!/usr/bin/env python
+# -*- coding: utf8; *-*
+# HEREHEREHERE
+
+#############################################################################
+#
+#  /home/wayne/bin/fitserial
+#
+#emacs helpers
+# (insert (format "\n# %s " (buffer-file-name)))
+#
+# (compile (format "python -m py_compile %s" (buffer-file-name)))
+# (compile (format "pydoc3 %s" (buffer-file-name)))
+#
+# (wg-python-fix-pdbrc)
+#
+#
+# (wg-python-toc)
+#
+# __author__  = 'Wayne Green'
+# __version__ = '0.1'
+# __all__     = ['FitsSerialize','FitsSerializeException'] # of quoted items to export
+# __doc__ = """
+# class FitsSerializeException(Exception):
+#     def __init__(self,message,errors=None):                 # FitsSerializeException::__init__()
+#     @staticmethod
+#     def __format__(e):                                      # FitsSerializeException::__format__()
+# class FitsSerialize(object):
+#     def __init__(self,fileargs,options,start=1):            # FitsSerialize::__init__()
+#     def gatherfiles(self):                                  # FitsSerialize::fitserialize()
+#     def serializefiles(self):                               # FitsSerialize::serializefiles
+#     def report(self):                                       # FitsSerialize::report()
+#     def debug(self,msg="",skip=[],os=sys.stderr):           # FitsSerialize::debug()
+# if( __name__ == "__main__"):
+#
+# 2022-11-24T08:10:42-0700 wlg - moved to python3
+# 2024-11-17T11:58:41-0700 wlg - added ability to work with path part of names.
+#                                dryrun and noclobber.
+#############################################################################
+import os
+import optparse
+import sys
+from astropy.io import fits
+
+_encoding = 'utf-8'                                       # Linux way for strings,,,
+if(os.name == 'nt'):
+    _encoding = 'utf-16'                                  # the Windoze way
+
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+
+__all__     = ['FitsSerialize','FitsSerializeException'] # of quoted items to export
+
+__doc__ = """
+fitserial files [-s] [-n] [-v] [--noclobber]
+   Prepend a serial number of the form a1xxxxx to the file's name.
+   The list of files may be one at a time, per usual, or be listed
+   one file per line in an IRAF at file. The at file format is @list.txt.
+
+   -s --start <int> the start number. The prefix starts with a 'a' to assure it sorts
+                    in alpha order. A 1 is tossed in to assure the numbers start high
+                    enough to include all digits in a subset of the file names. The
+                    prefix has a trailing _ to prevent adding a space to the filename.
+
+   -n --dryrun  Do the work, DO NOT WRITE the file.
+
+   -v --verboseflag be chatty about the run.
+
+   --noclobber - only write a serial file if the aNNNNNN does not work.
+
+   The program has been modified to accept "fully qualified path names" (FQPN)
+   consisting of a path part and the filename part. Files with blanks will retain
+   the blanks.
+
+   Overall, the serial number is relative to the observation date. The goal is
+   to keep file names small <23 characters.
+
+   Two additional header fields are added:
+   SERIALNO - the serial number
+   ORIGNAME - the file name before the serial number was added
+
+   See Also:  fixnames, fixheaders, trim
+"""
+
+##############################################################################
+# FitsSerializeException
+#
+##############################################################################
+class FitsSerializeException(Exception):              # class FitsSerializeException(Exception)
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(FitsSerializeException,self).__init__("FitsSerialize "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return f" FitsSerialize: {e.__str__()}\n"
+# FitsSerializeException
+
+##############################################################################
+# FitsSerialize- take in the list of files and sort them by DATE-OBS.
+#   for files with missing DATE-OBS, record them as mias
+#   for non-fits files, record them as errors
+#
+# class FitsSerialize(object):
+#     def __init__(self,fileargs,options,start=1):            # FitsSerialize::__init__()
+#     def gatherfiles(self):                                  # FitsSerialize::fitserialize()
+#     def serializefiles(self):                               # FitsSerialize::serializefiles
+#     def report(self):                                       # FitsSerialize::report()
+#     def debug(self,msg="",skip=[],os=sys.stderr):           # FitsSerialize::debug()
+#
+#
+##############################################################################
+class FitsSerialize(object):
+    """ Take in the list of files and sort them by DATE-OBS.
+    for files with missing DATE-OBS, record them as mias
+    for non-fits files, record them as errors
+    """
+
+    def __init__(self,fileargs,options,start=1):            # FitsSerialize::__init__()
+        """Setup for the fitserialization."""
+        #super().__init__()
+        # (wg-python-property-variables)
+        self.fileargs   = fileargs
+        self.start      = start    # starting number should be 1000 or so.
+        self.dates      = {}       # {... filename : [DATE-OBS,,,]...} should be one per key
+        self.files      = []       # the files to process
+        self.nodates    = []       # missing DATE-OBS
+        self.errors     = []       # fail fits open
+        self.mias       = []       # missing files
+        self.options    = options  # pass in command line options
+        self.serialized = {}       # dictionary date
+        if(self.options.verboseflag):
+            print(f"FitsSerialize starting to work with")
+            for f in self.fileargs:
+                print(f"{f}")
+    ### FitsSerialize.__init__()
+
+    def gatherfiles(self):                                  # FitsSerialize::fitserialize()
+        """Step 1: Gather together the files to process. Include @ files
+        For all files in the filelist; if the file is an IRAF @filename
+           list of files, then open the file and append each name to
+           self.files
+        If the filename is a standalone filename, then simply add that
+           file to self.files.
+        """
+
+        ##################################################################
+        # self-files -- the fully qualified file name (path+name)
+        # we add the axxxxx to the filename part at path location
+        ##################################################################
+        for fn in self.fileargs:                          # allow @ files.
+            if('@' in fn):                                # append each supplied filename from file
+                if('//' in fn):
+                    prefix,fn = fn.split('//@')           # pre IRAF 2.17
+                else:
+                    prefix,fn = fn.split('@')             #  post IRAF 2.17 the new way
+                with open(fn,'r') as f:
+                    for l in f:
+                        l = l.strip()
+                        if(len(l) != 0 and l[0] != '#'):  # permit comments and blank lines
+                            self.files.append(prefix+l)
+            else:
+                self.files.append(fn)                     # simply append
+
+        ##############################################################
+        #  Collect each file into a dictionary by its date-obs string
+        #  date value.
+        #  self.dates - files with names, good for serialization
+        #  self.nodates - files missing DATE-OBS usually non-science images.
+        #                 fix with means outside of this program.
+        #
+        ##############################################################
+        try:   # PDB-DEBUG
+            for filename in self.files:
+                if(os.path.isfile(filename)):                 # test to see if it is a real file.
+                    try:                                      # might be a directory.
+                        with fits.open(filename) as f:
+                            h = f[0].header
+                            if('DATE-OBS' in h):              # if DATE-OBS, add to self.dates
+                                self.dates.setdefault(h['DATE-OBS'],[]).append(filename)
+                            else:
+                                self.nodates.append(filename) # no date is a potential error
+                    except Exception as e:
+                        self.errors.append(f"FitsSerialize::fitserialize {filename} {e.__str__()}")
+                else:
+                    print(f"Not a file {filename} ")
+                    self.mias.append(filename)
+        except Exception as e:
+            print(f"File {filename + e.__str__()} failed, skipping.",file=sys.stderr)
+
+        # Now the self.dates consists of {... filename : [date,date,,,]
+        for k,v in self.dates.items():
+            if(len(v) > 1):
+                self.errors.append(f"Duplicate files Date: {k} files: {v}")
+                del self.dates[k]
+        # Now there is only one file per date.
+
+        return self
+
+    ### FitsSerialize::fitserialize()
+
+    def serializefiles(self):                               # FitsSerialize::serializefiles
+        """Step 2: Do the work to adjust filenames
+        self.dates is dict {... date : [file]}, ... }
+        There should be one and only one fully qualified filename per date.
+        Sort by date, change the file name, keep the path the same.
+        It is presumed all the filenames have been fixed by other means. No spaces,
+        fit -> fits etc.
+        """
+        keys          = list(self.dates.keys())      # keys are the dates,
+        keys.sort()                                   # should have one file per
+        for date in keys:
+            #print(f"FitsSerialize::serializefiles: filename {fname}")
+            fname     = self.dates[date][0]
+            fileparts = fname.split('/')
+            if(len(fileparts) > 1):
+                filebase = '/'.join(fileparts[:-1]) + '/' # get the path, ready with trailing separator
+                filename = fileparts[-1]                  # and the name
+            else:
+                filebase  = ''                            # there is no path
+                filename = fileparts[0]                   # sans a path
+
+            try:    # PDB-DEBUG
+                with fits.open(fname) as f:               # open the fqpn
+                    h              = f[0].header
+                    number         = "1" + f"{self.start}".zfill(4) # prepend zeros, large number, starts with 1
+                    self.start    += 1
+                    h['SERIALNO']  = number               # remember in the header
+                    if('ORIGNAME' not in h):
+                        h['ORIGNAME']  = filename         # add the name if not there already.
+                    newname        = filebase + 'a' + number + '_' + filename   # Make the newname
+                    if(self.options.dryrun):
+                        print(f"dryrun: mv\n    {fname} ->\n    {newname}")
+                    else:
+                        if(not os.path.exists(newname) and self.options.noclobber == False):
+                            f[0].writeto(newname, output_verify='fix',overwrite=True) # write the new name
+            except Exception as e:
+                self.errors.append(fname)
+                if(self.options.verboseflag):
+                    print(f"FitsSerialize::serializefiles  Finding {fname} {e}")
+                raise
+        return self
+
+    ### FitsSerialize::serializefiles
+
+    def report(self):                                       # FitsSerialize::report()
+        """Make a report based on the extra structures:
+        mia      - missing in action, specified file not found
+        errors   - failed to fits.open
+        nodates  - Missing DATE-OBS
+        """
+        if(len(self.mias) != 0):
+            for f in self.mias:
+                print(f"f is missing in action.")
+        if(len(self.nodates) != 0):
+            for f in self.nodates:
+                print(f"f has no date.")
+        if(len(self.errors) != 0):
+            for f in self.errors:
+                print(f"{f} may not be a proper fits file.")
+            if(self.options.verboseflag):
+                print(f"FitsSerialize::report: filelist")
+                for f in self.files:
+                    print(f"{f}")
+        return self
+
+    ### FitsSerialize::report()
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # FitsSerialize::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("FitsSerialize - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print(f'{key:20s} =',file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+
+    ### FitsSerialize.debug()
+
+# class FitsSerialize
+
+##############################################################################
+# MAIN
+#
+##############################################################################
+if( __name__ == "__main__"):
+
+    opts = optparse.OptionParser("""%prog """+__doc__)
+
+    opts.add_option("-s", "--start",  action="store", dest="start",
+                   default='1000',
+                   help="<bool>        be verbose about work (default False).")
+
+    opts.add_option("-n", "--dryrun",  action="store_true", dest="dryrun",
+                   default=False,
+                   help="<bool>        Do not change files.")
+
+    opts.add_option("--noclobber",  action="store_true", dest="noclobber",
+                   default=False,
+                   help="<bool>        Do not change files.")
+
+    opts.add_option("-v", "--verbose",  action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>        be verbose about work (default False).")
+
+    (options, args) = opts.parse_args()
+    if(options.dryrun) : options.noclobber = True   # hack synonym for dryrun
+
+    try:
+        start = int(options.start)
+    except Exception as e:
+        print("Start option {options.start} is not an integer. Aborting.",file=sys.stderr)
+        sys.exit(1)
+
+    fs = FitsSerialize(args,options,start)
+    fs.gatherfiles()           # PDB-DEBUG
+    fs.serializefiles()                                   # serialize and write the files.
+    if(options.verboseflag):
+        fs.report()
+

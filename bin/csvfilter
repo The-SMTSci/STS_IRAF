@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# (wg-astroconda3-pdb)      # CONDA Python3
+# (wg-python-fix-pdbrc)
+
+### HEREHEREHERE
+
+import sys
+import re
+import numpy  as np
+import pandas as pd
+from collections import OrderedDict
+
+#############################################################################
+#./csvfilter raw.csv  -w 'FWHM_IMAGE;3;6.5'
+#  /home/wayne/bin/csvfilter
+#
+#emacs helpers
+#
+# eg:  ./csvfilter -p f_ raw.csv  -w 'FWHM_IMAGE;3;6.5'
+#
+# (wg-python-toc)
+#
+# __doc__ = """
+# __author__  = 'Wayne Green'
+# __version__ = '0.1'
+# __all__     = ['CSVFilterException','CSVFilter']   # list of quoted items to export
+# class CSVFilterException(Exception):
+#     def __init__(self,message,errors=None):
+#     @staticmethod
+#     def __format__(e):
+# class CSVFilter(object):
+#     def debug(self,msg="",skip=[], os=sys.stderr) -- for help.
+#     def __init__(self,pfilename : str,        # CSVFilter::__init__()
+#     def makefilters(self):                                  # CSVFilter::makefilters()
+#     def applyfilter(self,df,col,lam):                       # CSVFilter::applyfilter()
+#     def whereall(self):                                     # CSVFilter::whereall()
+#     def write(self):                                        # CSVFilter.write()
+#     def debug(self,msg="",skip=[], os=sys.stderr):          # CSVFilter::debug()
+# if __name__ == "__main__":
+#
+#############################################################################
+
+__doc__ = """
+
+csvfilter [options] files...
+
+-w --within   [append str]     'COLNAME,minv,maxv' v >= minv and v <= maxv
+-e --exclude  [append str]     'COLNAME,minv,maxv' v >= max or v <= minv
+-p --prefix   [str]            Add optional prefix to file's output name.
+
+--comma       [bool]           use commas as separator.
+
+-v --verbose  [bool]           be chatty while running.
+
+For the most part, this program may be run over many files; with the
+same basic construction, or may be run once per file. The goal
+is to remove lines from CSV files that meet two basic properties
+'include within a range' or meet 'exclusion from a range'. Tests
+are less/greater equal to.
+
+IE: >= 0.00001 misses 0.
+    >= 0 and <= 0 IS zero.
+
+EXAMPLE:
+
+csvfilter -p 'f_' -w 'ELLIPTICITY; 0.05; 0.20' -e 'FWHM_IMAGE; 2; 5' *csv
+
+Spaces are stripped to promote readable lines in scripts.
+
+"""
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+__all__     = ['CSVFilterException','CSVFilter']   # list of quoted items to export
+
+##############################################################################
+# CSVFilterException
+#
+##############################################################################
+class CSVFilterException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(CSVFilterException,self).__init__("CSVFilter "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return f" CSVFilter: {e.__str__()}\n"
+# CSVFilterException
+
+##############################################################################
+# CSVFilter
+#
+##############################################################################
+class CSVFilter(object):
+    """ Given a csv and sep char, and list of ranges; create a pandas df
+        and filter the pd.
+    Each range test creates a set of the line id's to keep.
+    At the end of all range tests; keep the intersection of these sets.
+    (If any one of the range tests rejects a line that line is rejected).
+    within (c;minv,maxv) c >= minv and c <= maxv
+    exclude (c;minv,maxv) c <= minv or c >= maxv
+
+    pfilename : str,        -- the tsv file by name
+    psep      : str,        -- sep char chr(' ') \\t.
+    pwithin   : list,       -- empty == nop (c;minv,maxv) c >= minv and c <= maxv
+    pexclude  : list,       --              (c;minv,maxv) c <= minv or c >= maxv
+    pprefix   : str  = None -- if not defined, then overwrite.
+
+    def makefilters(self,withins,excludes) -- compile the within/excludes to lambdas
+    def applyfilter(self,df,col,lam)       -- loop over ordered dict apply each filter
+    def whereall(self)                     -- intersect sets
+    def write(self)                        -- save subset of the orignal file
+    def debug(self,msg="",skip=[], os=sys.stderr) -- for help.
+    """
+    #__slots__ = [''] # add legal instance variables
+    # (setq properties `("" ""))
+
+    trueexpr = lambda a : True            # basic test as class variable.
+    tickre   = re.compile(r'["\']')
+
+    def __init__(self,pfilename : str,        # CSVFilter::__init__()
+                      psep      : str,        # sep char chr(' ') \\t.
+                      pwithin   : list,       # empty == nop (c;minv,maxv) c >= minv and c <= maxv
+                      pexclude  : list,       # (c;minv,maxv) c <= minv or c >= maxv
+                      pprefix   : str  = None # set later
+                      ):
+        """Collect the parameters, and be prepared to do the work."""
+        #super().__init__()
+        self.warnings = []                     # non-fatal warnings
+        self.errors   = []                     # try to report most errors
+        self.filename = pfilename              # record csv filename
+        self.sep      = psep                   # the sep char for loading
+        self.within   = pwithin                # array of 'col;min;max' entries
+        self.exclude  = pexclude               # array of 'col;min;max' entries
+
+        self.prefix   = pprefix                # None means overwrite
+        self.cols     = []                     # df.columns to cut call overhead
+        self.tests    = OrderedDict()          # tests made from pwithin pexclude
+        self.sets     = []                     # perform an 'and' over filter requests
+        self.keep     = []                     # the final line id's to keep.
+        self.hint     = "loading Pandas table" # a string, about warnings/errors
+        self.df       = None                   # upcomming df
+        self.keep     = None                   # list of good lines id numbers.
+        try:
+            self.df   = pd.read_csv(filename, sep=sep)     ; hint = "grabbing columns"
+            self.cols = self.df.columns                    ; hint = "building tests from ranges"
+            for c in self.df.columns:
+                self.tests[c] = CSVFilter.trueexpr         ; hint = "compiling range tests"
+            self.makefilters(self.within, self.exclude)
+        except Exception as e:
+            errors.append(f"CSVFilter: {filename} {hint} {e.__str__()}")
+
+        if(len(errors) != 0):
+            emsg = '\n  '.join(self.errors)
+            wmsg = '\n  '.join(self.warnings)
+            raise CSVFilterException(f"CSVFilter: errors\n  {emsg}\nwarnings\n  {wmsg}")
+
+    ### CSVFilter.__init__()
+
+    def makefilters(self):                                  # CSVFilter::makefilters()
+        """Complile each entry in the two option lists of strings into a lambda.
+        Save the lambda by the column name for later use. It is possible to
+        define more than one test, they are run in order.
+
+        Each filter is of form <column name; min value; max value>
+
+        self.within  -- from __init__ from user's options
+        self.exclude
+        """
+        tickre = CSVFilter.tickre # lower derefs, quoted command lines carry ticks
+        try:
+
+            for o in self.within:   # -w --within append 'colname;min;max'
+                o        = tickre.sub('',o)
+                c,mn,mx  = list(map(str.strip,o.split(';'))) ; hint = f"making {c} test"
+                hint     = f"CSVFilter.makefilters floating {mn}"
+                mn       = float(mn)
+                hint     = f"CSVFilter.makefilters floating {mx}"
+                mx       = float(mx)
+                if(c in self.cols):
+                    try:
+                        hint     = "within (-w) range test {c}"
+                        self.tests[c] = lambda a : a >= mn and a <= mx
+                    except Exception as e:
+                        self.errors.append(f"Error with ranges {hint}\n{e.__str__()}")
+                else:
+                    self.warnings.append(f"no column matching range request '{c};;'")
+
+            for o in self.exclude:   # -e --exclude append 'colname;min;max'
+                c,mn,mx  = list(map(str,strip,o.split(';'))) ; hint = f"making {c} test"
+                if(c in self.cols):
+                    try:
+                        hint     = "exclude (-e)range test {c}"
+                        self.tests[c] = lambda a : a >= mx or a <= mn
+                    except Exception as e:
+                        self.errors.append(f"Error with ranges {hint}\n{e.__str__()}")
+                else:
+                    self.warnings.append(f"no column matching range request '{c};;'")
+
+        except Exception as e:
+            raise   # TODO beef up.
+
+    ### CSVFilter.makefilters()
+
+    def applyfilter(self,df,col,lam):                       # CSVFilter::applyfilter()
+        """Given a df, column name and lambda bool test compiled
+        from user -w -e expressions; return the line id's satisfying
+        the test in df.
+        """
+        vals = df[col].values
+        ret  = None                 # not an array for no vals
+        v    = "UNKNOWN"
+        try:
+            if(len(vals) != 0):
+                ret = []            # an array if vals
+                ret = [i for i,a in enumerate(vals) if lam(a)] # m,x baked in
+        except Exception as e:
+            print(f"CSVFilter.applyfilter {col}\n{e.__str__()}")
+            ret = None
+        return ret
+
+    ### CSVFilter.applyfilter()
+
+    def whereall(self):                                     # CSVFilter::whereall()
+        """Called by the write function.
+        For each test, call self.applyfilter and record the enumerated
+        line value. The list is returned."""
+        self.sets = []
+        try:
+            for k,t in self.tests.items():
+                res = self.applyfilter(self.df,k,t)      # hold out for error report
+                self.sets.append(set(res))
+            hint = f"intersecting the sets"
+            self.keep = list(self.sets[0].intersection(*self.sets[1:]))
+        except Exception as e:
+            raise CSVFilterException(f"CSVFilter.whereall - {k} {hint} {res}")
+        return self.keep
+
+    ### CSVFilter.whereall
+
+    def write(self):                                        # CSVFilter.write()
+        """Actually do the work and write the output file, or die."""
+        lines = self.whereall()
+        if(len(lines) > 0):  # Wow actually something to do
+            newdf = self.df.iloc[lines]
+            try:
+                oname = self.prefix+self.filename
+                with open(oname,'w') as f:
+                    #print(f"{oname}")
+                    newdf.to_csv(f,sep=self.sep)
+            except Exception as e:
+                raise CSVFilterException(f"CSVFilter.write {oname}\n {e.__str__()}")
+        return self
+
+    ### CSVFilter.write()
+
+    def debug(self,msg="",skip=[], os=sys.stderr):          # CSVFilter::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("CSVFilter - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print(f'{key:20s} =',file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+
+# class CSVFilter
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+### HEREHEREHERE
+
+if __name__ == "__main__":
+    import optparse
+
+    opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+    opts.add_option("-w", "--within", action="append", dest="within",
+                   default=[],
+                   help="<['c:minv,maxv',...]>   c >= minv and c <= maxv  .")
+
+    opts.add_option("-e", "--exclude", action="append", dest="exclude",
+                   default=[],
+                   help="<['c;minv,maxv',...]>   c <= minv or c >= maxv  .")
+
+    opts.add_option("-p", "--prefix", action="store", dest="prefix",
+                   default='',
+                   help="<str>                   add this prefix to output name (or overwrite).")
+
+    opts.add_option("--comma", action="store", dest="comma",
+                   default='\t',
+                   help="<char>                  first char of of string.")
+
+    opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>                  be verbose about work.")
+
+    (options, args) = opts.parse_args()
+
+    # declare variables.
+    warnings = []                        # collect phrases of warnings and errors
+    errors   = []
+    exclude  = []
+    within   = []
+    prefix   = ''
+    hint     = "processing options"
+
+    # process options
+    try:
+        if(len(options.comma) > 1):
+            warnings.append(f"separator is single char found {options.comma}.")
+        hint     = f"separator {options.comma}"
+        sep      = options.comma       ; hint = f"within   {options.within}"
+        within   = options.within      ; hint = f"excludes {options.exclude}"
+        exclude  = options.exclude     ; hint = f"prefix   {options.prefix}"
+        prefix   = options.prefix      ; hint = f"filennames"  # next up!
+    except Exception as e:
+        msgs =  'Errors:'   + '\n '.join(errors)
+        msgs += 'Warnings:' + '\n '.join(warnings)
+        print("csvfilter: {hint}\n{msgs}\nAborting.",file=sys.stderr)
+        sys.exit(1)
+
+    ##################################################################
+    #  Process the files. Whew! Now use the dang class.
+    #
+    ##################################################################
+    for filename in args:
+        CSVFilter(filename, sep, within, exclude,prefix).write()
+
+    sys.exit(0)

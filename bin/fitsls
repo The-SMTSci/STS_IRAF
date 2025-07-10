@@ -1,0 +1,639 @@
+#!/usr/bin/env python3
+
+#############################################################################
+# fitsls -- Do a proper job of listing files like unix ls, but use
+# fits header information and not unix file system stat information.
+# A dictionary of report dictonaries is used. The outer dictionary
+# uses the file extension as it's key and a dictionary based on
+# exposure date, exposure time and type as its key. Its value
+# is a list with the exposure's time and file name.
+#
+# Split by extension. This helps to sort the fits files from the FIT
+# goats.
+#
+# Group by name as the primary key, and sort by exp date, time,
+# exp type, exposure duration.
+#
+#
+#   $Revision: 1.22 $
+#   $Log: fitsls,v $
+#   Revision 1.22  2017/01/26 17:41:45  wayne
+#   Incremental Checkin from VYSOS machine.
+#
+#   Revision 1.19  2016/03/18 04:01:49  wayne
+#   Added filter and cleaned up help and comments.
+#   Incremental Checkin.
+#
+#   Revision 1.18  2015/08/01 20:23:56  wayne
+#   Added 'Light Framexxxxxx' as 'light frame' to the mix of IMAGETYP
+#   to support damned amateur software. Added loging to disambiguate
+#   DATE-TIME, again due to damned amateur softeware.
+#
+#   Revision 1.17  2015/06/04 01:33:51  wayne
+#   Pulled out the -r recursive stuff. Now find . -name "*fits" | xargs fitsls
+#   P
+#   works.
+#
+#   Revision 1.16  2015/05/03 00:10:06  wayne
+#   Buffed up the names output. bias to zero.
+#
+#   Revision 1.15  2015/05/02 22:59:47  wayne
+#   Added hacks to accomodate subaru images.
+#
+#   Revision 1.14  2015/04/23 18:26:47  wayne
+#
+#   Added a short cut -o to add in the object field to the listing
+#   easier.
+#
+#   Revision 1.13  2015/01/08 23:40:51  wayne
+#   csv2sql
+#
+#   Revision 1.12  2015/01/08 17:03:06  wayne
+#   Changed -e switch to -k (key) to be consistent with fitsgrep.
+#   Fixed the vexing wildcard issue. Recursive is not active,
+#   but possible?
+#
+#   Revision 1.11  2014/10/31 17:16:10  wayne
+#   Added support for Zwo camera, added a switch --report to tally
+#   up the headers by key and dump to stdout at the end.
+#   Zwo required hacking up a date decent date.
+#
+#   Revision 1.10  2014/10/31 15:52:28  wayne
+#   Back to a working version
+#
+#   Revision 1.4  2014/05/02 22:36:30  astro
+#   added -n and -t functions
+#
+#   Revision 1.3  2014/05/02 22:33:31  astro
+#   fitsls
+#
+#   Revision 1.2  2014/05/02 21:08:23  astro
+#   Brand new fitsls
+#
+#   Revision 1.1.1.1  2014/05/01 21:31:06  astro
+#   The fits utilities package
+#
+#   Revision 1.13  2011-08-26 15:55:37  wayne
+#   Worked the output to have columns line up. The timestamps sometimes
+#   carry fractional seconds -- a pain for Python's datetime routines.
+#   The exposure times are often pretty goofy too with lots of odd digits
+#   in the fraction, so rather than truncate I extended the format.
+#   Made the verbose switch more like debug for now.
+#
+#   Revision 1.12  2011-08-02 21:51:22  wayne
+#   Fixed recursive decent into command directory
+#
+#   Revision 1.11  2011-08-02 15:23:50  wayne
+#   Added check for slitwidth.
+#
+#   Revision 1.10  2011-07-26 21:28:13  wayne
+#   Fixed switches
+#
+#   Revision 1.9  2011-07-22 22:44:55  wayne
+#   Added trap for broken pipe, where pipe to head is used
+#
+#   Revision 1.8  2011-07-22 20:51:43  wayne
+#   Added feature where fitsls <dir> goes into dir and behaves more like ls
+#
+#   Revision 1.7  2011-07-21 17:44:53  wayne
+#   fixed name format lenght, object types, and added -k for select keys
+#
+#   Revision 1.6  2011-07-06 19:00:55  wayne
+#   Added features, cleaned up operations
+#
+#   Revision 1.5  2011-06-23 15:25:43  wayne
+#   added feature to examine filters/grating
+#
+#   Revision 1.4  2011-06-21 14:52:01  wayne
+#   fixed up the output format
+#
+#   Revision 1.3  2011-06-21 04:35:51  wayne
+#   Reworked, made consistent with fitsrewrite and fitsort
+#
+#   Revision 1.2  2011-06-18 15:25:05  wayne
+#   Reworked recursion, flags
+#
+#
+# 2009-12-14T14:00:58-0700 wlg
+#############################################################################
+from __future__ import print_function
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+
+__doc__ = """
+List pertinent info from fits files. Use header values for
+exposure date and time, lenght of the data portion, and
+exposure type. Files are listed, grouped by extension type
+to disambiguate the listings.
+
+usage: fitsls [options] files...
+-r recurse into directories found
+-l print the time and date for each exposure
+-t sort by timestamp in header (DATE-EXP T TIME-EXP)
+-v be verbose about it all
+NOTE:
+-r,-v and -l SWITCHES ARE NOT IMPLEMENTED.
+"""
+import os
+import sys
+import optparse
+import re
+import glob
+try:
+   from astropy.io import fits
+except:
+   print >>sys.stderr,"Run under conda/astropy."
+   sys.exit(1)
+
+import copy
+
+
+usage="""%prog [switches] files...
+\nlist all fits or FIT files, by searching headers for information.
+Make report of exposure date, duration, object type, and filename
+sorted by exposure date. -r,-v and -l SWITCHES ARE NOT IMPLEMENTED."""
+
+_errmsg = {}
+__reportheaders__ = {}
+
+__verbose__     = False
+__recurseflag__ = False
+__nameonly__    = False
+__pathname__    = False
+__keylist__     = []       # list of additional fields to consider.
+__shortflag__   = False
+__typesonly__   = []       # all types
+__debugflag__   = False
+__reportflag__  = False
+__namefmt__     = "%17,17s"
+__slashslash__  = re.compile(r'//')
+__fitfile__     = re.compile(r'.*(fit|FIT|fits|fts)$')
+__blank__       = re.compile('^\s*$')
+__date__        = re.compile(r'date',re.IGNORECASE)
+_imghints       = re.compile(r'.*(1d|dark|light|bias|zero|object|flat|comp|sci[enc]*).*',re.IGNORECASE)
+__collision__   = 1
+__headermatches__ = []
+_defaulttype    = None
+
+##############################################################################
+# translate_imagetype - given popular imagetype names, make consistent
+# with IRAF naming conventions.
+##############################################################################
+def translate_imagetype(imagetyp):
+   """Given some imagetyp value, make consistent with IRAF."""
+   nv = { # translate
+      #from         : to
+      'object'      : 'object',
+      'light'       : 'object',            # translate known bad phrases
+      'target'      : 'object',
+      'sci'         : 'object',
+      'science'     : 'object',
+      'dark'        : 'dark',              # into known good values.
+      'zero'        : 'zero',              # i.e. lose the 'frame' part
+      'bias'        : 'zero',
+      'bias frame'  : 'zero',
+      'dark frame'  : 'dark',
+      'flat field'  : 'flat',
+      'flat'        : 'flat',
+      'comp'        : 'comp',              # place hold for validation..
+      'comp2d'      : 'comp2d',            # track comparison images
+      '1d'          : '1d',
+      'light frame' : 'object'
+   }.get(imagetyp,'unknown')
+   return nv
+# translate_imagetype
+
+##############################################################################
+# getallfiles - given a top level file list return FQN
+# list of file names.
+##############################################################################
+def getallfiles(rootdir):
+   """Get the files"""
+   flist = []
+   for root, dirs, files in os.walk(rootdir):
+      for name in files:
+        if(__fitfile__.match(name)):
+           flist.append(os.path.join(root[2:], name)) # lose the ./
+   return flist
+
+##############################################################################
+# getfiles
+#
+##############################################################################
+def getfiles(rootdir):
+   """Get only files this dir, no -R switch"""
+   if(type(rootdir) == type([] ) ):
+      flist = [f for f in rootdir if os.path.isfile(f) and __fitfile__.match(f)]
+   else:
+      flist = [f for f in os.listdir('.') if os.path.isfile(f) and __fitfile__.match(f)]
+   return flist
+
+##############################################################################
+# ErrorMessage Given Use the reason as a key, and accumulate file names
+# by reason by appending the 'msg' to a list by 'key'. This is a dictionary
+# if lists.
+##############################################################################
+def ErrorMessage(dict,key,msg):
+   if(not key in dict):
+      dict[key]=[]
+   dict[key].append(msg)
+
+# ErrorMessage
+
+##############################################################################
+# fmtextras - keys are a requested list of values. When processing
+# each file, we make a dictionary of found keys; with the dictionary
+# key the enumeration (index) for that possible header value in the list.
+# right now we return comma separated list based on the maximum length
+# of any one key in the mix. If the report were delayed we could
+# use the max possible length of a value down the column.
+##############################################################################
+def fmtextras(extras):
+   """For a dictionary of extras, make a string"""
+   ret = ""
+   if(len(extras) != 0):
+      maxlen = max([len(v) for k,v in extras.items()])
+      fmt = "("
+      comma = ""
+      for i in range(len(extras)):
+         fmt += "%s %%-%ds" % (comma,maxlen)
+         comma = ", "
+      fmt += ")"
+      ret = fmt % tuple(extras.values())
+   elif(__debugflag__): print >>sys.stderr,"fmtextras: |%s|" % extras
+   return ret
+
+# fmtextras
+
+def leading(pstr):
+   """Make sure digit(s) have leading zero"""
+   ret = ""
+   if(len(pstr) < 2):
+      ret = "0%s" % pstr
+   else:
+      parts = pstr.split('.')
+      if(len(parts[0]) < 2):
+         parts[0] = "0%s" % parts[0]
+      ret = '.'.join(parts)
+   return ret
+
+
+##############################################################################
+# The main definition
+#
+##############################################################################
+def zwo(h):
+   """Given the header dictionary, update as needed"""
+   date = None
+   time = None
+   if('XDATE' in h):
+      v    = h['XDATE']
+      if(type(v) == type(1)):   # convert int to a string
+         v = "%d" % v
+      d    = v[0:2]
+      m    = v[2:4]
+      y    = v[4:]
+      #print "date v",type(v),v,"  ",y,m,d
+      date = "20%s-%s-%s" % tuple(map(leading,[y,m,d]))
+   if('OBSMID' in h):
+      v    = h['OBSMID']
+      if(type(v) == type(1.0)):  # convert int to a string
+         v = "%f" % v
+      #print "time v",type(v),v
+      h    = v[0:2]
+      m    = v[2:4]
+      s    = v[4:]
+      time = "%s:%s:%s" % tuple(map(leading,[h,m,s[:6]]))
+
+   return date,time
+# zwo
+
+
+##############################################################################
+# fitsls - option to recurse.
+#
+##############################################################################
+def fitsls(requests,pfdir=None):
+   """requests is an array of header fields in order of request,
+     If pfdir is null, glob is applied to './' for list of candidate files"""
+
+   errcnt    = 0                               # track total errors, all files
+   recurdirs = []
+   headers   = copy.deepcopy(requests)         # get header : [values,,,] lengths
+                                               # max(map(len,header['k']]
+   if(pfdir == None or len(pfdir) == 0):
+      files     = getfiles('.')
+   elif(type(pfdir) == type([]) and len(pfdir) != 0):
+      files     = getfiles(pfdir)
+   elif(type(pfdir) == type([]) and len(pfdir) == 0):
+      files     = getfiles('.')
+   elif(type(pfdir) == type({})  ):            # comming attraction, json?
+      files = pfdir.keys()
+      files.sort()
+   else:
+      files     = getfiles('.')
+   report    = {}
+
+   pwd       = os.getcwd() + "/"
+   badfiles  = []
+
+   ###################################################################
+   #  For all the files.
+   ###################################################################
+   for ffile in files:
+      try:
+         f = fits.open(ffile)
+      except Exception as e:
+         ErrorMessage(_errmsg,"Bad File %s"%e,ffile)
+         badfiles.append(pwd+ffile)
+         continue
+      if(__verbose__):
+         print( "Processing %s" % ffile)
+
+      h = f[0].header
+      filehdr = {}
+      if(__reportflag__):
+         for k,v in h.items():
+            if(k not in __reportheaders__):
+               __reportheaders__[k] = 1
+            else:
+                __reportheaders__[k] += 1
+      if('DATE-OBS' in h and 'T' in 'DATE-OBS'):
+         filetime = h['DATE-OBS']
+      elif('DATE' in h):
+         filetime = h['DATE']
+      elif('DATE-OBS' in h and 'TIME-OBS' in h and 'T' not in 'DATE-OBS'):
+            filetime = h['DATE-OBS'] + 'T' + h['TIME-OBS']
+      elif('DATE-OBS' in h and 'T' in h['DATE-OBS']):
+            filetime = h['DATE-OBS']
+      elif('XDATE' and 'OBSMID' in h):
+         filetime = 'T'.join(zwo(h))
+      elif('DATE-OBS' in h and 'UT' in h):   # subaru images
+         filetime = h['DATE-OBS']+"T"+h['UT']
+      else:
+         filetime = "INDEF"
+
+      if('DATA-TYP' in h and ('IMAGETYP' not in h)):
+         h['IMAGETYP'] = h['DATA-TYP']      # we don't rewrite header, ammend it
+
+      for rh in requests:
+         val = "INDEF"
+         if(__date__.search(rh)):
+            val = filetime
+         elif(rh in h):
+            val =  h[rh]
+            if(rh == 'IMAGETYP'):
+               val = translate_imagetype(rh.lower())
+         try:
+            filehdr[rh] = "%s"%val
+         except:
+            print("Oops ",val,file=sys.stderr)
+         headers[rh].append("%s"%val)   # accumulate this value
+      if('IMAGETYP' not in h and 'OBSTYPE' in h):
+         m = _imghints.search(ffile)           # update imgtypes with bad words
+         t = ""                                # old untranslated keyword, if there
+         if(m):
+            t = m.group(1)                     # get the type
+            t = t.lower().strip()
+            nv = translate_imagetype(t)
+         else:
+            nv = 'unknown'
+         if(nv == 'unknown' and None != _defaulttype):  # 'unknown' or override from -t
+            nv = _defaulttype
+            self.warnings,msg(ffname,"Filetype is Unknown %s |%s|, |%s|" % (ffile,t,v))
+         val = "%s?"%nv                    # the IMAGETYP possibility
+         filehdr['IMAGETYP'] = val
+         headers[rh].append(val)
+      else:
+         if('IMAGETYP' in h):
+            nt = translate_imagetype(h['IMAGETYP'].lower())
+         else:
+            nt = "UNKNOWN"
+         filehdr['IMAGETYP'] = nt
+      report[ffile] = copy.deepcopy(filehdr)
+
+   if(len(badfiles) != 0):
+      for f in badfiles:
+         print("BAD FILE %s" % f,file=sys.stderr)
+   return headers,report
+# fitsls
+
+
+##############################################################################
+# MAIN
+#
+##############################################################################
+if( __name__ == "__main__"):
+   t = re.compile("T")
+
+   if(os.getenv("DEBUGPIPE")):
+      __debugflag__ = True
+
+   opts = optparse.OptionParser(usage=usage)
+
+   opts.add_option("-b", "--binning",  action="store_true", dest="binningflag",
+                   default=False,
+                   help="<bool>    include binning infomration")
+
+   opts.add_option("-g", "--grating",  action="store_true", dest="gratingflag",
+                   default=False,
+                   help="<bool>    append GRATING/FILTER field")
+
+   opts.add_option("-k", "--key", action="append", dest="keylist",
+                   default=[],
+                   help="<str>   append `regexp' for key(s) to match in header.")
+
+   opts.add_option("-l", "--long",     action="store_true", dest="longflag",
+                   default=False,
+                   help="<bool>    print the time and date for each exposure.")
+
+   opts.add_option("-n", "--name",     action="store_true", dest="nameflag",
+                   default=False,
+                   help="<bool>    Add title to the listing.")
+
+   opts.add_option("-o", "--object",  action="store_true", dest="objectkw",
+                   default=False,
+                   help="<bool>    shorthand to force -k object .")
+
+   opts.add_option("-p", "--pathname",  action="store_true", dest="pathname",
+                   default=False,
+                   help="<bool>    include fill pathname with the filename.")
+
+   opts.add_option("-q", "--quiet",    action="store_true", dest="quietflag",
+                   default=False,
+                   help="<bool>    suppress reporting any errors")
+
+   opts.add_option("-s", "--spectra",action="store_true", dest="spectra",
+                   default=False,
+                   help="<bool>    include spectra related headers.")
+
+   opts.add_option("-t", "--type",     action="append", dest="typeflag",
+                   default=[],
+                   help="<bool>    sort by file type(s).")
+
+   opts.add_option("-v", "--verbose",  action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>    be verbose about work.")
+
+# Not really structured for this, watch this space...
+#   opts.add_option("-R", "--recursive",action="store_true", dest="recurseflag",
+#                   default=False,
+#                   help="<bool>    recurse through subdirs like ls")
+
+   opts.add_option("--report",action="store_true", dest="reportflag",
+                   default=False,
+                   help="<bool>    collect all headers seen and give count")
+
+   opts.add_option("-1", "--nameonly", action="store_true", dest="nameonly",
+                   default=False,
+                   help="<bool>    Just print the names, one per line, with options.")
+
+   opts.add_option("--typesonly", action="append", dest="typesonly",
+                   default=[],
+                   help="<list >   consider files of 'type' or 'types' only")
+
+   opts.add_option("--notitle", action="store_true", dest="notitleflag",
+                   default=False,
+                   help="<bool >   don't print a title")
+
+   (options, args) = opts.parse_args()
+
+   __verbose__ = options.verboseflag            # let all see we want info
+
+   gains        = ['DATE','S_GAIN1','S_GAIN2','S_GAIN3','S_GAIN4']
+   baserequests = ['DATE','FILTER','OBJECT']
+   keyrequests  = ['IMAGETYP','EXPTIME']
+
+   __reportflag__ = options.reportflag
+
+   if(options.binningflag):
+      baserequests+= ['XBINNING','YBINNING']
+   requests = {}
+   if(options.objectkw):
+      baserequests.append('OBJECT')
+
+   newlist = []
+   for k in options.keylist:
+      if(',' in k):
+         parts = list(map(str.strip,k.split(',')))
+         for p in parts:
+            newlist.append(p)
+      else:
+         newlist.append(k)
+   options.keylist = list(map(str.upper,newlist))
+
+   for v in baserequests + options.keylist + keyrequests:
+      requests[v] = []            # build a dictionary, the key is the RE for header val
+
+   ###################################################################
+   #  Get the dictionary of files with each ones dictionary of requested
+   #  headers
+   ###################################################################
+   headers,report = fitsls(requests,args) # {filename : {headers}
+
+   # sort the mess by the requested header date
+   dates = {}
+   for f,v in report.items():  # file and dictionary of dates
+      if('DATE' in v):
+          dates[v['DATE']+f] = f # filename by date
+      else:
+          print("missing date for ", f,file=sys.stderr)
+
+   files    = []
+   datekeys = list(dates)      # the date
+   datekeys.sort()
+   
+   for d in datekeys:
+      files.append(dates[d])  # arange the files in internal date order
+
+   if(len(files ) == 0 ):
+      exit(0)
+
+   ###################################################################
+   #  Make the titles
+   ###################################################################
+   title        = ""
+   titleformats = []
+
+   # This is only the DATE
+   for r in baserequests:
+      if(len(headers[r]) == 0):
+         print("header %s has empty length" % r,file=sys.stderr)
+         continue
+      else:
+         hlen = max( map(len,headers[r]+[r] ) )
+      fmt = "%%-%ds " % hlen
+      titleformats.append(fmt)
+      title += fmt % r
+
+   # any requested by the user
+   for r in options.keylist:
+      if(len(headers[r]) == 0):
+         print("header %s r has empty length" % r,file=sys.stderr)
+         continue
+      else:
+         hlen = max( map(len,headers[r]+[r] ))
+      fmt = "%%-%ds " % hlen
+      titleformats.append(fmt)
+      title += fmt % r
+
+   # the main ones IMAGETYP EXPTIME
+   for r in keyrequests:
+      if(len(headers[r]) == 0):
+         print("header %s has empty length" % r,file=sys.stderr)
+         continue
+      else:
+         hlen = max( map(len,headers[r]+[r] ) )
+      fmt = "%%-%ds " % hlen
+      titleformats.append(fmt)
+      title += fmt % r
+
+   namelen = max(map(len,files))
+   flen    = max(map(len,files))
+   namefmt = "%%-%d.%ds " % (flen,flen)
+   title   += namefmt % " File"
+
+   ###################################################################
+   #  Make the report
+   ###################################################################
+   offs    = len(baserequests)
+   koffs   = len(keyrequests)
+   if(not options.notitleflag):
+      print (title)
+   if(options.nameonly):
+      for f in files:
+         print( f)
+   else:
+      for f in files:
+         #if(not options.recurseflag):
+         #   if('/' in f):
+         #      continue
+         h = report[f]
+         if(options.typeflag):
+            #h = report[f]  redundant
+            if(options.verboseflag):
+               print( 'IMAGETYP', 'IMAGETYP' in h, options.typeflag)
+            if('IMAGETYP' in h and h['IMAGETYP'] not in options.typeflag):
+               continue
+         l = ""
+         for i,r in enumerate(baserequests + options.keylist + keyrequests):
+            l += titleformats[i] % h[r]
+         #for i,r in enumerate(options.keylist):
+         #   l += titleformats[offs+i] % h[r]
+         l += " " + f
+   
+         if(options.nameflag):
+            print (f)
+         else:
+            print (l)
+
+   if(not options.quietflag ):
+      for k,v in _errmsg.items():
+         print >>sys.stderr,k,v
+
+   if(__reportflag__):
+      k = list(__reportheaders__)
+      k.sort()
+      for v in k:
+         print ("%12s %d" % (v,__reportheaders__[v]))

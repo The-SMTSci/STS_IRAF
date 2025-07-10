@@ -1,0 +1,92 @@
+#!/usr/bin/env python
+
+#############################################################################
+# bin/sex2csv - convert sextractor catalogs to csv.
+# 2022-01-28T16:59:08-0700 wlg
+#############################################################################
+import optparse
+import sys
+
+__doc__ = """
+sex2cat [options] files...
+ -f --filname     <filename> add the name, single quotes as LAST column
+ -n --noheaders   <bool> in a loop you can make a real big csv
+ -v --verbose     <bool> be chatty about work as needed
+
+The output is unfiltered. Load a csv, filter, and write using
+a separate process as needed.
+
+usage: sex2cat < test.cat > test.csv "original_fits_name.fits"
+
+Sextractor outputs test.cat as the default (change in default.sex).
+In a pipeline scenario, sextractor is run in the same loop as
+the platesolve takes place. The name of associated fits file
+is known and may be exploited with the -f switch.
+
+touch run.csv
+runflat='-n'
+
+# to make one large file, using the -n and -f flags
+# since multiple sextractor file data is in the output file
+# the -f <name> option disambiguates each set of data.
+
+#bash:
+  for f in catfiles*.cat; do 
+      sex2csv -f "$f"  < "$f" > "$f".csv; # make lots of csv files.
+  done
+"""
+
+
+__author__  = 'Wayne Green'
+__version__ = '0.2'
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+
+if __name__ == "__main__":
+   opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+   opts.add_option("-f", "--filename", action="store", dest="filename",
+                   default="",
+                   help="<filename>     add a filename column to end")
+
+   opts.add_option("-r", "--noheaders", action="store_true", dest="noheaders",
+                   default=False,
+                   help="<bool>     only one header for sex2cat >> file.")
+
+   opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>     be verbose about work.")
+
+   (options, args) = opts.parse_args()
+
+   filename     = ''                            # prep to add the original file to the mix
+   column_names = []                            # accumulate the parameter/column names
+   if(options.filename):                        # exercise option to put file name at end?
+      filename = f"{options.filename}"          # make the string
+
+   for l in sys.stdin:                          # The data comes from stdin, csv to stdout
+      if('#' in l):                             # comments: sextractor 'column' descriptors
+         parts = list(map(str.strip,l.split())) # list of them
+         column_names.append(parts[2])          # second thing is the column name
+         continue
+      break
+
+   column_names.append('filename')
+   if(options.noheaders is False):              # out put the columns and tack any filename
+      print(','.join(column_names))  # request onto the end of the list.
+
+   for l in sys.stdin:                          # for all the rows (remaining part of file)
+      try:
+         parts = list(map(str.strip,l.split())) # turn sextractor line into columnar data
+         parts.append(filename)                 # append filename as "" or ",something"
+         print (",".join(parts))                # send to stdout (by design)
+      except Exception as e:                    # if error...
+         print(f"{e.__str__()}",file=sys.stderr)
+         sys.exit(1)                            # ... just die.
+
+
+
+

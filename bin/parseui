@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# (wg-python-fix-pdbrc)
+# /home/git/external/ChileHelper/src/py/parseui
+#
+# (compile (format "python -m py_compile %s" (buffer-file-name)))
+# (compile (format "python -m pydoc %s" (buffer-file-name)))
+#
+#############################################################################
+### HEREHEREHERE
+
+import os
+import optparse
+import sys
+import re
+from collections import OrderedDict
+
+__FSDEBUG = [False,True][os.getenv('FSDEBUG') == '']
+
+# to handle the Unicode filenames from Win1X
+_encoding = 'utf-8'                         # deal with nt's UTF issues.
+if(os.name == 'nt'):
+    _encoding = 'utf-16'
+# with io.open(listname,'r',encoding=_encoding) as f:
+
+# (wg-python-types)
+#############################################################################
+#
+#
+#  /home/git/external/ChileHelper/src/py/parseui
+# (wg-python-emacs-help)
+#
+# (wg-python-toc)
+#
+#
+#############################################################################
+
+__doc__ = """
+
+/home/git/external/ChileHelper/src/py/parseui [options] files...
+
+Use python to process the .ui file, extract the type of widget
+and all the instance names.
+
+Print a elisp structure together with a count.
+
+
+
+2025-06-24T15:05:42-0600
+"""
+ 
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+__all__     = ['','']   # list of quoted items to export
+
+# (wg-python-class )
+##############################################################################
+# ParseUIException
+#
+##############################################################################
+class ParseUIException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(ParseUIException,self).__init__("ParseUI "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return f" ParseUI: {e.__str__()}\n"
+# ParseUIException
+
+
+##############################################################################
+# ParseUI
+#
+##############################################################################
+class ParseUI():
+    """ Parse a pyside6.ui xml file.
+    """
+    widgetparse = re.compile(r'.*[<]widget.*[=]{1}("\w+").*name[=]{1}("\w+")')
+    # Generic widgets we don't want to mess with.
+    __ignore = [ '"QGroupBox"', '"QGroupBox"', '"QLabel"', '"QMainWindow"', 
+                 '"QMenu"', '"QMenuBar"', '"QStatusBar"', '"QTabWidget"', '"QWidget"']
+
+    def __init__(self,                                # ParseUI.__init__()
+                 filename : str = None
+                ):
+        """Initialize this class."""
+        self.filename = filename
+        self.widgets = OrderedDict()       # {class : [names,...]",...}
+        if(filename is not None):
+            with open(filename,'r') as f:
+                for l in f:
+                    l.strip()
+                    try:
+                        if("<widget" in l):
+                            msg = "re search"
+                            m   = self.widgetparse.search(l)
+                            if(m is not None):
+                                msg         = "split groups "
+                                widget,name = (m.groups()+('','',''))[:2]
+                                msg         = f"print parts {m}  groups {m.groups()}"
+                                msg         = "save them"
+                                if(widget not in self.__ignore):
+                                    self.widgets.setdefault(widget,[]).append(name)
+                    except Exception as e:
+                        print(f"ParseUI Error: {msg}. Search {self.widgeparse} returns{m}")
+        else:
+            raise ValueException(f"ParseUI filename ({self.filename})is missing.")
+    ### ParseUI.__init__()
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # ParseUI.debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print(f'ParseUI - {msg} ', file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print(f'{key:20s} =',file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+
+    ### ParseUI.debug()
+
+    __ParseUI_debug = debug  # really preserve our debug name if we're inherited
+
+# class ParseUI    ParseUI.__init__()
+
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+# HEREHEREHERE
+if __name__ == "__main__":
+    opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+    opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>     be verbose about work.")
+
+    opts.add_option('-c', '--class', action="store", dest="classname",
+                    default = "MainWindowGUI",
+                   help="<str>     override the default classname.")
+
+
+    (options, args) = opts.parse_args()
+
+    classname = options.classname
+
+    # (wg-python-atfiles)
+    for filename in args:
+        p       = ParseUI(filename)
+        count   = 0
+        classes = []
+        print('_ = """  # the widget list')
+        print("(setq pyside_widgets (list ")
+        for k,v in p.widgets.items():
+            v.sort()
+            for name in v:
+                print(f"""`({k[1:-1]} {name}) """)
+                count += 1
+        print("))")
+        print('''\n(load "/home/emacs/wg-pyside6.el")''')
+        print(f'''(setq res (wg-pyside6-gen-from-list  pyside_widgets "{classname}"))''')
+        print('''(insert (format "%s\\n\\n%s\\n\\n%s" (nth 0 res) (nth 1 res) (nth 2 res)))''')
+ 
+        print(f"\n# Count = {count}")
+        print('"""')
+        keys = list(p.widgets.keys())
+        keys.sort()
+        for k in keys:
+            print(f"# {k}")
+
+

@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+# HEREHEREHERE
+
+#############################################################################
+# 
+#  /home/wayne/iraf/sasiraf/iraf_home/sexfilter
+#
+#emacs helpers
+# (insert (buffer-file-name))
+#
+# (ediff-current-file)
+# (wg-python-fix-pdbrc)
+# (find-file-other-frame "./.pdbrc")
+# (wg-python-fix-pdbrc)   # PDB DASH DEBUG end-comments
+#
+# (setq mypdbcmd (concat (buffer-file-name) "<args...>"))
+# (progn (wg-python-fix-pdbrc) (pdb mypdbcmd))
+#
+# (wg-astroconda-pdb)       # IRAF27
+# (wg-astroconda3-pdb)      # CONDA Python3
+#
+# (set-background-color "light blue")
+# (wg-python-toc)
+#               
+#############################################################################
+import optparse
+import re
+import sys
+
+__doc__ = """
+
+~/iraf/sexfilter [options]  <test.cat>
+
+-h --help       print this help
+-f --fwhm       default 6.0
+-e --elongation default 1.2
+
+The sextractor default.param fields include
+   ELONGATION
+   FWHM_IMAGE
+   X_IMAGE
+   Y_IMAGE
+   ALPHA_SKY
+   DELTA_SKY
+
+Where ELONGATION < elongation and FWHM_IMAGE > fwhm
+accumulate and print to stdout the x,y,ra,dec as space separated
+lines suitable for PyRAF.IRAF ccmap and cctrans.
+
+
+"""
+
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+
+if __name__ == "__main__":
+   opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+   opts.add_option("-e", "--elongation", action="store", dest="elongationlimit",
+                   default=1.2,
+                   help="<float>     .")
+
+   opts.add_option("-f", "--fwhm", action="store", dest="fwhmlimit",
+                   default=6.0,
+                   help="<float>     .")
+
+   opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>     be verbose about work.")
+
+   (options, args) = opts.parse_args()
+
+   idxlinere = re.compile(r'^#')
+   msg = ""
+   try:
+      elongationlimit = float(options.elongationlimit)
+   except:
+      msg += 'elongation limit error expecting float found \%s|' % options.elongationlimit
+   try:
+      fwhmlimit       = float(options.fwhmlimit)
+   except:
+      msg += 'fwhm limit error expecting float found \%s|' % options.fwhmlimit
+
+   if(msg != ''):
+      print("Errors with parameter(s) %s" % msg,file=sys.stderr)
+      sys.exit(1)
+
+   #if(len(args) == 0 ): args.append(None)
+   for filename in args:
+      d     = {}
+      x     = []
+      y     = []
+      ra    = []
+      dec   = []
+      with open(filename,'r') if filename else sys.stdin as f:
+         for l in f:
+            if(not idxlinere.match(l)):
+               break
+            parts = list(map(str.strip,l.split()))
+            d[parts[2]] = int(parts[1]) - 1
+
+         if('ALPHA_SKY' not in d and 'DELTA_SKY' not in d):
+            print("Can not find ra.dec in header. Aborting",file=sys.stdout)
+            break;
+
+         for l in f:   # now we're in the lines of data    PDB-DEBUG
+            parts      = list(map(str.strip,l.split()))
+            elongation = float(parts[d['ELONGATION']])
+            fwhm       = float(parts[d['FWHM_IMAGE']])
+            if(fwhm < fwhmlimit or elongation > elongationlimit):
+               continue
+            x.append(float(parts[d['X_IMAGE']]))
+            y.append(float(parts[d['Y_IMAGE']]))
+            ra.append(float(parts[d['ALPHA_SKY']]))
+            dec.append(float(parts[d['DELTA_SKY']]))
+
+   if(options.verboseflag):
+      print("{0:9} {1:9} {2:9} {3:9}".format('X','Y','RA','Dec'))
+   for px,py,pra,pdec in zip(x,y,ra,dec):
+      print("{0:>9.3f} {1:>9.3f} {2:>9.5f} {3:>9.5f}".format(px,py,pra,pdec))
+
+

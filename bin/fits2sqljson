@@ -1,0 +1,461 @@
+#!/usr/bin/env python3
+# -*- coding: latin-1 -*-
+# HEREHEREHERE
+# examples
+#############################################################################
+# fits2sqljson *20141214*fits -D wayne -t myfits -c -w /home/wayne/poop.psql
+#
+# ls -1 *fits > input.txt # 7421 files
+# fits2sqljson --list input.txt -D wayne -t myfits -c
+#
+#  /home/wayne/JSON2SQL.py
+#
+#emacs helpers
+# (insert (buffer-file-name))
+#
+# (ediff-current-file)
+# (wg-python-fix-pdbrc)
+# (find-file-other-frame "./.pdbrc")
+# (wg-python-fix-pdbrc)   # PDB DASH DEBUG end-comments
+#
+# (setq mypdbcmd (concat (buffer-file-name) "<args...>"))
+# (progn (wg-python-fix-pdbrc) (pdb mypdbcmd))
+#
+# (wg-astroconda-pdb)       # IRAF27
+# (wg-astroconda3-pdb)      # CONDA Python3
+#
+# (set-background-color "light blue")
+# (wg-python-toc)
+#
+#
+# (compile (format "python -m py_compile %s" (buffer-file-name)))
+# (compile (format "pydoc3 %s" (buffer-file-name)))
+#
+#
+# def s2r(rastr):                                   # s2r()
+#
+# def s2d(decstr):                                  # s2d()
+#
+# def pquote(str):
+#
+#
+#
+# cur      = conn.cursor()
+# cur.execute(open('jdsample.json','r').read());
+# cur.execute("commit")
+#8m11.847s
+# (iv (setq tmp (/ 7421.0  (+ (* 60.0 8) 11.847 ))))  15.088 records per second
+# 2025-01-03T09:50:49-0700 -- updating to later python3
+#############################################################################
+import optparse              # we're flexible about our sources etc.
+import re                    # idiots put single quotes in comments
+import sys                   # because  sys!
+from astropy.io import fits  # open file, deal with the header
+import json                  # json data
+import psycopg               # ah, postgresql
+import collections           # use an ordered dict, keep cards in order
+import getpass               # Shuuuush! we're secret!
+
+# (wg-python-graphics)
+__doc__ = """
+
+fits2sqljson  [options] files...
+
+fits2sqljson -D mydatabase -t mynewtable 
+
+Asks for password for the user. if -u/--user omitted then
+the user's name is taken from system login information.
+
+-c, --create     bool  Create table and Q3C index
+-t, --table      str   table name
+-D, --database   str   database name
+-u, --username   str   username, defaults to login id
+-v, --verbose    bool  be verbose about work
+-w, --write      str   fqpath filename for a psql image
+--list           str   file of files; one fqpathname per line
+--host           str   host [localhost]
+--port           str   port address
+
+This program assumes installation nativly or a container that has
+Ubuntu 22.04 LTE, postgreSQL 14 and https://github.com/segasai/q3c
+installed. (q3c - really fast indexing)
+
+Data filename should be partially qualified path name. 
+A fully qualified path name would be host:/home/user/somewhere/<relative path>
+where the relative path may be shared amongst the hosts.
+
+
+Testing with Chile WR Star Program files.
+
+OK,,, a FITS header, ala astropy, is a 'card' consisting of a tuple of
+3 things: a keyword, a value, and a comment.  A Python dictionary is a
+(key,value) pair. So we make an insert statement that carries a
+PostgreSQL 'jsonb' datatype, with the 'key' from the fits files
+together with a nested 'jsonb' structure consisting of 'value' and
+'comment' for the card.  The comment information carries important
+data.
+
+q3c_radial_query(tablera, tabledec, queryra, querydec, radiusdegrees)
+
+Here are some sample queries:
+
+select count(*) from myfits;
+select ora,odec from myfits limit 10;
+
+select fqpname,ora::numeric(7,5),odec::numeric(7,5) from myfits
+   where q3c_radial_query(ora, odec, 9.7419958, 48.3369, 0.1);
+
+# Acid test with timing examples
+\timing
+select header->'OBJECT' ->> 'value' as "OBJECT",
+       fqpname,
+       ora::numeric(7,5) as "RA",
+       odec::numeric(7,5) as "Dec",
+       header->'FILTER' ->> 'value' as "Filter",
+       header->'DATE-OBS'  ->> 'value'  as "dateobs"
+from myfits
+   where q3c_radial_query(ora, odec, 9.7419958, 48.3369, 0.1)
+   order by header->'FILTER'->> 'value',header->'DATE-OBS'->> 'value';
+\timing
+
+  OBJECT   |               fqpname                |   RA    |   Dec    | Filter |          dateobs
+-----------+--------------------------------------+---------+----------+--------+---------------------------
+ 'NGC185'  | elp1m008-kb74-20140525-0059-e90.fits | 9.74200 | 48.33700 | 'ip'   | '2014-05-26T10:50:17.539'
+ 'NGC185'  | elp1m008-kb74-20140525-0060-e90.fits | 9.74200 | 48.33701 | 'ip'   | '2014-05-26T10:52:14.272'
+ 'NGC185'  | elp1m008-kb74-20140624-0048-e90.fits | 9.74200 | 48.33700 | 'ip'   | '2014-06-25T09:14:32.307'
+ 'NGC185'  | elp1m008-kb74-20140624-0049-e90.fits | 9.74199 | 48.33698 | 'ip'   | '2014-06-25T09:16:28.901'
+ 'NGC185'  | elp1m008-kb74-20140919-0035-e90.fits | 9.74200 | 48.33699 | 'ip'   | '2014-09-20T08:29:59.623'
+ 'NGC185'  | elp1m008-kb74-20140919-0036-e90.fits | 9.74200 | 48.33699 | 'ip'   | '2014-09-20T08:31:56.280'
+ 'NGC0185' | elp1m008-kb74-20141026-0084-e90.fits | 9.74199 | 48.33699 | 'ip'   | '2014-10-27T01:59:41.961'
+ 'NGC0185' | elp1m008-kb74-20141026-0085-e90.fits | 9.74198 | 48.33700 | 'ip'   | '2014-10-27T02:01:39.030'
+ 'NGC0185' | elp1m008-kb74-20141113-0148-e90.fits | 9.74201 | 48.33703 | 'ip'   | '2014-11-14T08:04:45.533'
+ 'NGC0185' | elp1m008-kb74-20141113-0149-e90.fits | 9.74199 | 48.33701 | 'ip'   | '2014-11-14T08:06:41.930'
+ 'NGC0185' | elp1m008-kb74-20141213-0212-e90.fits | 9.74200 | 48.33700 | 'ip'   | '2014-12-14T06:05:21.695'
+ 'NGC0185' | elp1m008-kb74-20141213-0213-e90.fits | 9.74199 | 48.33701 | 'ip'   | '2014-12-14T06:07:18.217'
+ 'NGC0185' | elp1m008-kb74-20150119-0112-e90.fits | 9.74199 | 48.33697 | 'ip'   | '2015-01-20T03:35:00.511'
+ 'NGC0185' | elp1m008-kb74-20150119-0113-e90.fits | 9.74199 | 48.33696 | 'ip'   | '2015-01-20T03:36:57.501'
+ 'NGC0185' | elp1m008-kb74-20141026-0086-e90.fits | 9.74200 | 48.33701 | 'rp'   | '2014-10-27T02:03:46.954'
+ 'NGC0185' | elp1m008-kb74-20141026-0087-e90.fits | 9.74201 | 48.33701 | 'rp'   | '2014-10-27T02:05:43.386'
+ 'NGC0185' | elp1m008-kb74-20141113-0150-e90.fits | 9.74200 | 48.33701 | 'rp'   | '2014-11-14T08:08:50.869'
+ 'NGC0185' | elp1m008-kb74-20141113-0151-e90.fits | 9.74200 | 48.33696 | 'rp'   | '2014-11-14T08:10:47.421'
+ 'NGC0185' | elp1m008-kb74-20141213-0214-e90.fits | 9.74200 | 48.33699 | 'rp'   | '2014-12-14T06:09:26.973'
+ 'NGC0185' | elp1m008-kb74-20141213-0215-e90.fits | 9.74201 | 48.33700 | 'rp'   | '2014-12-14T06:11:24.220'
+ 'NGC0185' | elp1m008-kb74-20150119-0114-e90.fits | 9.74201 | 48.33699 | 'rp'   | '2015-01-20T03:39:05.758'
+ 'NGC0185' | elp1m008-kb74-20150119-0115-e90.fits | 9.74200 | 48.33699 | 'rp'   | '2015-01-20T03:41:03.008'
+Time: 12.903 ms
+
+Taking Sergey's advice, and re-timing the query:
+
+\timing
+select header->'OBJECT' ->> 'value' as "OBJECT",
+       fqpname,
+       ora::numeric(7,5) as "RA",
+       odec::numeric(7,5) as "Dec",
+       header->'FILTER' ->> 'value' as "Filter",
+       header->'DATE-OBS'  ->> 'value'  as dateobs
+from myfits
+   where q3c_join(9.7419958, 48.3369, ora, odec, 0.1)
+   order by header->'FILTER'->> 'value',header->'DATE-OBS'->> 'value';
+\timing
+
+Time: 9.848 ms 
+
+% (iv (setq tmp (/ 12.903 9.848 )))   1.31 speed up.
+
+See https://github.com/segasai/q3c for details.
+
+"""
+
+
+__author__  = 'Wayne Green'
+__version__ = '1.0'
+
+coordre = re.compile(r'[dmsh: ]+')  # convert sexigesimal for several formats.
+requote = re.compile(r'\'')         # remove single quotes from comments.
+
+##############################################################################
+# s2r -- convert sexigesimal right ascension to degrees
+#
+##############################################################################
+def s2r(rastr):                                   # s2r()
+   """s2r - convert a sexadecimal RA TO a floating point degrees.  input
+   is string hh:mm[:ss.s] Will take ra.ddddd ra:mm.mmm as well.
+   The truncated forms appear in SIMBAD query output.
+   """
+   ra = None
+   try:
+      parts = list(map(float,coordre.split(rastr)))
+      if(len(parts) == 1):
+         ra = parts[0] * 15.0     # a straight hrs.xxxxxxx
+      elif(len(parts) == 2):
+         ra = (parts[0] + (parts[1] / 60.0)) * 15.0
+      elif(len(parts) == 3):
+         ra = (parts[0] + (parts[1] / 60.0) + parts[2]/3600.0) * 15.0
+   except:
+      raise Exception("s2r: Unable to convert %s to degrees ra" % rastr)
+   return ra
+
+### s2r
+
+##############################################################################
+# s2d -- convert sexigesimal declination to degrees
+#
+##############################################################################
+def s2d(decstr):                                  # s2d()
+   """s2d - convert a sexadecimal Dec TO a floating point degrees.  input
+   is string hh:mm[:ss.s] Will take ra.ddddd ra:mm.mmm as well.
+   The truncated forms appear in SIMBAD query output.
+
+   """
+   sign = 1.0
+   try:
+      parts = list(map(float,coordre.split(decstr)))
+      if(parts[0] < 0.0):
+         sign = -1.0
+         parts[0] = -1 * parts[0]
+      if(len(parts) == 1):
+         dec = parts[0]     # a straight d.xxxxxxx
+      elif(len(parts) == 2): # d m.xxxxxx
+         dec = (parts[0] + (parts[1] / 60.0))
+      elif(len(parts) == 3): # d m s.xxxx
+         dec = (parts[0] + (parts[1] / 60.0) + parts[2]/3600.0)
+   except:
+      raise Exception("r2d: Unable to convert sexigesimal %s to degrees dec" % decstr)
+   return sign*dec
+
+### s2d
+
+##############################################################################
+# plquote -- if str is a string, then return a single quoted value.
+#  at this point, the quotes have been removed.
+##############################################################################
+def pquote(str):
+   """Return a quoted string if str is a string."""
+   ret = str
+   if(type(str) is type("")):
+      ret = "''{}''".format(str)
+   return ret
+
+### pquote
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+if __name__ == "__main__":
+   opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+#   opts.add_option("-", "--", action="store", dest="",
+#                   default=,
+#                   help="<>     .")
+
+   opts.add_option("-c", "--create", action="store_true", dest="create",
+                   default=False,
+                   help="<bool>     create table.")
+
+   opts.add_option("-t", "--table", action="store", dest="table",
+                   default=None,
+                   help="<str>   table name.")
+
+   opts.add_option("-D", "--database", action="store", dest="database",
+                   default=None,
+                   help="<str>   database name.")
+
+   opts.add_option("--host", action="store", dest="host",
+                   default="localhost",
+                   help="<str>    host [localhost].")
+
+   opts.add_option("--port", action="store", dest="port",
+                   default="5432",
+                   help="<str>   port address.")
+
+   opts.add_option("-u", "--username", action="store", dest="username",
+                   default= getpass.getuser(),
+                   help="<str>   username, defaults to login id.")
+
+   opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>     be verbose about work.")
+
+   opts.add_option("--list", action="store", dest="list",
+                   default=None,
+                   help="<str>     file with 1 filename per line")
+
+   opts.add_option("-w", "--write", action="store", dest="write",
+                   default=None,
+                   help="<str>     output file name for \\i ....")
+
+
+   (options, args) = opts.parse_args()
+
+
+   ###################################################################
+   #  Load list of files (command line is only so big! Adds list
+   # to any found on the command line.
+   ###################################################################
+   if(options.list is not None):
+      with open(options.list,'r') as f:
+         for l in f:
+            args.append(l.strip())
+
+   ###################################################################
+   #  Get the options local and formatted.
+   ###################################################################
+   username = options.username
+   password = getpass.getpass("{}'s DB Acct Password: ".format(username))
+   table    = options.table
+   database = options.database
+   host     = options.host
+   port     = "{}".format(options.port)                 # cast to string
+
+   conn     = psycopg.connect(database = database,
+                               user     = username,
+                               password = password,
+                               host     = host,
+                               port     = port)
+
+   ###################################################################
+   #  The create statement. Pretty simple.
+   #  Make a raw table, then select from that into a working table
+   # if needed. Indexing at the bottom of this file.
+   ###################################################################
+   createquery = f"""DROP TABLE IF EXISTS {tablename} CASCADE;
+DROP SEQUENCE IF EXISTS {tablename}_sequence;
+CREATE SEQUENCE         {tablename}_sequence START 100000;
+
+CREATE TABLE {tablename} (
+   uniqueid  integer PRIMARY KEY DEFAULT nextval('{tablename}_sequence'),
+   fqpname   text,                  -- partially qualified path name
+   ora       float default NULL,    -- decimal ra for the target
+   odec      float default NULL,    -- deciman declination for target
+   target    text default NULL,     -- name of the target
+   dateobs   datetime DEFAULT NULL, -- psql datetime for the target
+   header    jsonb                  -- json binary image of fits header
+);
+COMMENT ON TABLE {tablename} is 'FITS records.';
+COMMENT ON COLUMN {tablename}.fqpname is 'fully qualified path name';
+COMMENT ON COLUMN {tablename}.header  is 'PostgreSQL jsonb header';
+
+\set 
+
+"""                                      # database extablished with connection
+
+   insertstmt = "INSERT INTO {} (rawra,rawdec,fqpname,header) values ( {},{},'{}','{}' );"
+
+   ofile      = None                                   # output file as needed
+   # create the table, commit.
+   try:
+      if(options.create):
+         cur      = conn.cursor()
+         rc       = cur.execute(createquery)
+         cur.execute("commit")                            # critical, nail into db.
+   except psycopg.errors.UndefinedTable as e:
+      print("Undefined table: {}".format(e.__str__()),file=sys.stderr)
+      print("Query:\n {}".format(createquery))
+      sys.exit(-1)
+   except psycopg.errors.DependentObjectsStillExist as e:
+      print("DependentObjectsStillExist: {}".format(e.__str__()),file=sys.stderr)
+      print("Query = {}".format(createquery))
+   if(options.write is not None):
+      ofile = open(options.write,'w')
+      print(createquery,file=ofile)
+
+   ###################################################################
+   #  Process each file.
+   #  Assume only one HDU perfile, Ignore the data.
+   ###################################################################
+   for filename in args:
+      if(options.verboseflag):
+         print("File {}".format(filename))
+      f        = fits.open(filename)
+      h        = f[0].header
+      history  = []                                    # initialize structures for this file
+      comment  = []                                    # aggregate history anc comments for file
+      myheader = collections.OrderedDict()             # collect json bound header's values
+
+      ################################################################
+      #  Load up an ordered dictionary for the cards, aggregate the
+      #  history and comments in order.
+      ################################################################
+      for c in h.cards: # PDB_DEBUG
+         key = c.keyword
+         if(type(c.value) is type("") and "'" in c.value):
+            c.value = requote.sub(",",c.value)
+         if(options.verboseflag): print("|{}|  |{}|  ".format(key,c.value))
+         if(key == 'HISTORY'):
+            history.append(c.value)
+            if(options.verboseflag):
+               print("HISTORY keyword |{}| value |{}| c.comment |{}|".format(key, c.value, c.comment))
+         elif(key == 'COMMENT'):
+            history.append(c.value)
+            if(options.verboseflag):
+               print("COMMENT keyword |{}| value |{}| c.comment |{}|".format(key, c.value, c.comment))
+         elif(key != ''):  # the tail end of a 'block', Astropy's interesting artifact!
+            myheader[key] = {'value' : pquote(c.value), 'comment' : pquote(c.comment)}   # HEREHEREHERE
+            #myheader[key] = '{'+ "{},{}".format(pquote(c.value), pquote(c.comment)) + '}'
+            #myheader[key] = '{{"value" : {}, "comment" : {}}}'.format(c.value,c.comment) # examples
+            if(key == 'RA'):
+               if(type(c.value) == type('str')):
+                  myheader[key] = s2r(c.value)            # change to decimal if ra
+               else:
+                  myheader[key] = c.value
+            elif(key == 'DEC'):
+               if(type(c.value) == type('str')):
+                  myheader[key] = s2d(c.value)            # or dec
+               else:
+                  myheader[key] = c.value
+
+      if(len(history) != 0):                           # add any history statements
+         myheader['HISTORY'] = "COMMENT " + ",COMMENT ".join(history)
+
+      if(len(comment) != 0):                           # add any comment statements
+         myheader['COMMENT'] = "HISTORY "+ ",HISTORY ".join(comment)
+
+# hand crafting of the various bits of the syntax needed.
+
+      jd    = json.dumps(myheader)                        # make a json structure
+      raval = decval = 'NULL'
+      if('RA' in myheader):
+         raval = "{:8.5f}".format(myheader['RA'])
+      if('DEC'in myheader):
+         decval = "{:8.5f}".format(myheader['DEC'])   # string as raw
+      insertquery = insertstmt.format(table, raval,decval, filename, jd)
+      try:
+         cur.execute(insertquery)
+         if(options.write is not None):
+            print(insertquery,file=ofile)
+      except Exception as e:
+         print(type(table))
+         print("insert error {}".format(e.__str__()), file=sys.stderr)
+         print("Create stmt: {}".format(createquery))
+         print("Insert stmt: {}".format(insertquery))
+         import pprint
+         pprint.pprint(myheader,indent=4)
+         raise
+      except psycopg.errors.SyntaxError as pe:
+         print(query)
+         raise
+
+   ###################################################################
+   #  Prepare the indexing.
+   ###################################################################
+   q3cquery = """
+CREATE INDEX ON {0}      (public.q3c_ang2ipix(ora,odec)); -- {0}_q3c_ang2ipix_idx
+CLUSTER {0}_q3c_ang2ipix_idx      ON {0};
+ANALYZE  {0};
+
+"""
+   
+   if(options.create):
+      cur      = conn.cursor()                            # index the table via ra/dec
+      rc       = cur.execute(q3cquery.format(table))
+      cur.execute("commit")
+      if(options.write is not None):
+         print(q3cquery,file=ofile)
+         print("commit",file=ofile)
+         ofile.close()
+   #else:  # probably want to just add fields, so reindex operation needed
+   #   q3cquery = "reindex table myfits"  # make sure this works with Q3C
+   #   cur      = conn.cursor()
+   #   rc       = cur.execute(q3cquery)
+   #   cur.execute("commit")

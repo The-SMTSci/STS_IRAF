@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+# HEREHEREHERE
+
+#############################################################################
+# 
+#  /home/wayne/iraf/sasiraf/bin/fitshistory
+#
+#emacs helpers
+# (insert (buffer-file-name))
+#
+# (ediff-current-file)
+# (wg-python-fix-pdbrc)
+# (find-file-other-frame "./.pdbrc")
+# (wg-python-fix-pdbrc)   # PDB DASH DEBUG end-comments
+#
+# (setq mypdbcmd (concat (buffer-file-name) "<args...>"))
+# (progn (wg-python-fix-pdbrc) (pdb mypdbcmd))
+#
+# (wg-astroconda-pdb)       # IRAF27
+# (wg-astroconda3-pdb)      # CONDA Python3
+#
+# (set-background-color "light blue")
+# (wg-python-toc)
+#               
+#############################################################################
+import optparse
+import re
+import sys
+from astropy.io import fits
+
+__doc__ = """
+
+fitshistory  [options] files...
+
+fitshistory newcombined.fits --history "combined files" -l l.l 
+
+Add a set of history lines to the file.
+
+
+"""
+
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+
+if __name__ == "__main__":
+   opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+
+   opts.add_option("-l", "--list", action="append", dest="historylist",
+                   default=[],
+                   help="<array filenames>     files with new names.")
+
+   opts.add_option("--history", action="append", dest="history",
+                   default=[],
+                   help="<array>     Strings to add as history.")
+
+   opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>     be verbose about work.")
+
+   (options, args) = opts.parse_args()
+
+   newhistory = options.history              # direct lines or empty
+
+   if(len(options.historylist) != 0):        # add lines if any
+      for filename in options.historylist:
+         with open(filename) as f:
+            for l in f:
+               newhistory.append(l.strip())
+
+   if(len(newhistory) == 0):
+      print("Missing --history statements to append to files.",file=sys.stderr)
+      print(__doc__,file=sys.stderr)
+      raise Exception("Missing Hisotry")
+
+   for filename in args:
+      with fits.open(filename,mode='update') as f:
+         for l in newhistory:
+            f[0].header.add_history(l)
+
+
+
+
+

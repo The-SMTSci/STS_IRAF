@@ -1,0 +1,192 @@
+#!/usr/bin/env python
+
+#############################################################################
+#  /home/wayne/Data/Spirits/Reduce/why/sex2csv
+# 
+# edits: -k "header:low:high"
+#        -k "@list of edits"
+# 
+# 
+#############################################################################
+import optparse
+import re
+import sys
+import collections
+
+__doc__ = """
+
+sex2tsv [options] files...
+
+-c --comma         <true>   make a 'csv' file with commas as the field delimiter
+-o --oname <name>  <str>    use <name> as output name else use stdout
+-t --tabs          <true>   DEFAULT make a 'tsv' file with tabs as the field delimiter
+-v --verbose       <true>   be chatty about work
+
+Each file will make the proper <filebasename>,[tsv,csv] based on -c and -t
+
+-- Example of SExtractor output
+  fields are split based on whitespace. If a phrase then good luck!
+#   1 X_IMAGE                Object position along x                                    [pixel]
+#   2 Y_IMAGE                Object position along y                                    [pixel]
+#   3 FWHM_IMAGE             FWHM assuming a gaussian core                              [pixel]
+#   4 ISOAREA_IMAGE          Isophotal area above Analysis threshold                    [pixel**2]
+#   5 ELONGATION             A_IMAGE/B_IMAGE                                           
+#   6 ELLIPTICITY            1 - B_IMAGE/A_IMAGE                                       
+#   7 FLUX_ISO               Isophotal flux                                             [count]
+#   8 FLUXERR_ISO            RMS error for isophotal flux                               [count]
+#   9 BACKGROUND             Background at centroid position                            [count]
+#  10 THRESHOLD              Detection threshold above background                       [count]
+#  11 MAG_ISO                Isophotal magnitude                                        [mag]
+#  12 MAGERR_ISO             RMS error for isophotal magnitude                          [mag]
+
+
+See:
+/home/wayne/Data/Spirits/Reduce/why/sex2csv
+/home/wayne/Data/Spirits/Reduce/why/sex2tsv
+
+"""
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+
+if __name__ == "__main__":
+   opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+   opts.add_option("-c", "--comma", action="store_true", dest="comma",
+                   default=False,
+                   help="<bool>     force comma as sep.")
+
+   opts.add_option("-e", "--edit", action="append", dest="edits",
+                   default=[],
+                   help="<bool>     force comma as sep.")
+
+   opts.add_option("-o", "--outfile", action="store", dest="outfile",
+                   default=None,
+                   help="<str>     use '<filename>.csv' as output file name.")
+
+   opts.add_option("-t", "--tabs", action="store_true", dest="tabs",
+                   default=True,
+                   help="<bool>     force tab as sep.")
+
+   opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>     be verbose about work.")
+
+   (options, args) = opts.parse_args()
+
+   errors    = []
+   sep       = ","                   # just default to tabs. The -t switch for
+   extension = '.csv'                # real csv is needed for Topcat
+
+   (options, args) = opts.parse_args()
+
+   ###################################################################
+   #  We need to make some edits.
+   #  'KEYWORD:v1:v2"
+   ###################################################################
+   rawedits = []
+   edits    = {}
+   if(len(options.edits) > 0):
+      for e in options.edits:
+         if(e[0] == '@'):
+            with open(e[1:],'r') as f:
+               for l in f:
+                  rawedits.append(l.strip())
+            continue
+      edits.append(e)
+
+   # rawedits have the combined line, parse the lines.
+   for e in rawedits:
+      parts = list(map(str.strip,e.split(':')))
+      k     = parts[0]
+      rest  = parts[1:]            # relative to the command.
+      edits.get(k,[]).append(rest) # add/extend edit(s) for a k
+
+   for k,v in edits:
+      if(len(v) > 1):
+         errors.append(f"{filename} edit commands > 1 for {k}")
+
+   if(options.comma == True):         # comfort
+      sep       = ","
+      extension = '.csv'
+
+   if(len(args) > 1 and options.outfile):
+      print("WARNING More than one sextractor to stdout.",file=sys.stderr)
+      print("This wil result in multiple header lines and",file=sys.stderr)
+      print("column sections may not agree in content!",file=sys.stderr)
+      print("Only first header will be output",file=sys.stderr)
+
+   if(len(errors) > 0):
+      print('\n'.join(errors),file=sys.stderr)
+      sys.exit(1)
+
+   ###################################################################
+   #  Process each file. 
+   #  
+   ###################################################################
+   headersprinted = False
+   for filename in args:
+
+      headers = ['Filename']                               # the columns in order
+      f       = open(filename,'r')               # open the file.
+
+      if(options.outfile):                       # fix up the output name
+         oparts  = filename.split('.')
+         if(len(oparts) < 3):
+            continue
+         outname = '.'.join(oparts[:-1]) + extension
+         o       = open(outname,'w')
+      else:
+         o = sys.stdout
+
+      for l in f:                                # dif out headers while '#'
+         l = l.strip()
+         if(l[0] == '#'):
+            hparts = l.split()
+            headers.append(hparts[2])            # just the column keyname
+            continue
+         break                                   # leave f open...
+
+      if(not headersprinted):                    # next are the data columns
+         headersprinted = True
+         print (sep.join(headers),file=o)        # output one liner first line only once
+
+      # grab the data.
+      pddict = {}
+      for l in f:                                # continue,  stab at the rest of the lines
+         parts = [filename]+list(map(str.strip,l.split())) # add in the filename!
+         ok = []
+         if(0):
+            if('FWHM_IMAGE' in headers):
+               v = float(parts[headers.index('FWHM_IMAGE')])
+               if(v > 8 and v < 45):
+                  ok.append(True)
+               else:
+                  ok.append(False)
+         if(0):
+            if('ISOAREA_IMAGE' in headers):
+               v = float(parts[headers.index('ISOAREA_IMAGE')])
+               if(v > 100):
+                  ok.append(True)
+               else:
+                  ok.append(False)
+         if(0):
+            if('ELLIPTICITY' in headers):
+               v = float(parts[headers.index('ELLIPTICITY')])
+               if(v < 0.05):
+                  ok.append(True)
+               else:
+                  ok.append(False)
+
+         if(False not in ok):
+            print (sep.join(parts),file=o)
+
+      f.close()                       # close the output file
+      if(o != sys.stdout):            # leave sys.stdout alone
+         o.close
+

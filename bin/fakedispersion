@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# (wg-astroconda3-pdb)      # CONDA Python3
+#
+#
+# (wg-python-fix-pdbrc)  # PDB DASH DEBUG end-comments
+#
+# (compile  (format "pydoc3 %s" buffer-file-name))
+#
+# sci_test.fits -y 630
+
+### HEREHEREHERE
+
+import os
+import optparse
+import sys
+import re
+import numpy   as np
+from   astropy.io import fits
+
+
+from matplotlib import pyplot as plt
+from matplotlib import rc
+
+
+
+#############################################################################
+#
+#  ~/bin/fakedispersion
+#
+#emacs helpers
+# (insert (format "\n# %s " (buffer-file-name)))
+#
+# (set-input-method 'TeX' t)
+# (toggle-input-method)
+#
+# (wg-astroconda3-pdb)      # CONDA Python3
+#
+# (wg-python-fix-pdbrc)  # PDB DASH DEBUG end-comments
+#
+# (ediff-current-file)
+# (find-file-other-frame "./.pdbrc")
+
+# (setq mypdbcmd (concat (buffer-file-name) "<args...>"))
+# (progn (wg-python-fix-pdbrc) (pdb mypdbcmd))
+#
+# (wg-astroconda-pdb)       # IRAF27
+#
+# (set-background-color "light blue")
+#
+# (wg-python-toc)
+#
+# __doc__ = """
+# __author__  = 'Wayne Green'
+# __version__ = '0.1'
+# __all__     = ['','']   # list of quoted items to export
+# class FakeVoigtException(Exception):
+#     def __init__(self,message,errors=None):
+#     @staticmethod
+#     def __format__(e):
+# class FakeVoigt(object):
+#     #__slots__ = [''] # add legal instance variables
+#     def __init__(self):                               # FakeVoigt::__init__()
+#     def debug(self,msg="",skip=[],os=sys.stderr):           # FakeVoigt::debug()
+# def fakedispersion(filename,/,like=False,pos=466,width=10):
+# if __name__ == "__main__":
+#
+#
+#
+#############################################################################
+__doc__ = """
+
+/home/wayne/bin/fakedispersion
+[options] files...
+
+Create a fake linear dispersion axis with a decent gaussian profile
+across given images.
+
+Assumes DISPAXIS=1
+
+-y --yaxis     <int>      The pixel row to center the dispersion axis.
+
+-l --like      <bool>     Make a np.ones(), apply a gaussian background
+                          then put the dispersion axis into place.
+
+-r --reference <filename> TODO: if database/filename's aperture exists
+                          model that aperture.
+
+-s --sigma     <float>    Sigma for the gaussian fit.
+
+-w --width     <pixels>   width of the dispersion axis.
+
+"""
+
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+__all__     = ['FakeVoigtException','FakeVoigt','fakedispersion']
+
+##############################################################################
+# Generators
+# Gaussian
+# Lorienzian
+# Voigt
+##############################################################################
+
+##############################################################################
+# FakeVoigtException
+#
+##############################################################################
+class FakeVoigtException(Exception):
+    """Special exception to allow differentiated capture of exceptions"""
+    def __init__(self,message,errors=None):
+        super(FakeVoigtException,self).__init__("FakeVoigt "+ message)
+        self.errors = errors
+    @staticmethod
+    def __format__(e):
+        return f" FakeVoigt: {e.__str__()}\n"
+# FakeVoigtException
+
+
+##############################################################################
+# FakeVoigt
+#
+##############################################################################
+class FakeVoigt(object):
+    """ Make a generator for fake Voigt profiles.
+        Idea is to return a descritized fit for values.
+        A few astropy related files...
+https://docs.astropy.org/en/stable/api/astropy.modeling.functional_models.Gaussian1D.html
+https://docs.astropy.org/en/stable/api/astropy.modeling.functional_models.Voigt1D.html
+https://docs.astropy.org/en/stable/modeling/models.html#basics
+
+
+
+    """
+    #__slots__ = [''] # add legal instance variables
+    # (setq properties `("" ""))
+    def __init__(self):                               # FakeVoigt::__init__()
+        """Initialize this class."""
+        #super().__init__()
+        # (wg-python-property-variables)
+
+    ### FakeVoigt.__init__()
+
+
+    def debug(self,msg="",skip=[],os=sys.stderr):           # FakeVoigt::debug()
+        """Help with momentary debugging, file to fit.
+           msg  -- special tag for this call
+           skip -- the member variables to ignore
+           os   -- output stream: may be IOStream etc.
+        """
+        import pprint
+        print("FakeVoigt - %s " % msg, file=os)
+        for key,value in self.__dict__.items():
+            if(key in skip):
+               continue
+            print(f'{key:20s} =',file=os,end='')
+            pprint.pprint(value,stream=os,indent=4)
+        return self
+
+    ### FakeVoigt.debug()
+
+    __FakeVoigt_debug = debug  # really preserve our debug name if we're inherited
+
+   # (wg-python-properties properties)
+
+# class FakeVoigt
+
+def makegaussian(width,
+       plot      =False,   # make a plot
+       amplitude =1.0,     # amplitude
+       sigma     =2.0      # sigma
+       ):
+    """Return a gaussian to span "width" pixels"""
+    def func(x, a, x0, sigma):
+        return a*np.exp(-(x-x0)**2/(2*sigma**2))
+    x   = np.linspace(0,width,width)
+    y   = func(x, amplitude, width//2, sigma)
+    yn  = y + 0.2 * np.random.normal(size=len(x))
+    if(plot):
+        fig = plt.figure()
+        ax  = fig.add_subplot(111)
+        ax.plot(x, y, c='k', label='Function')
+        fig.show()
+    return y
+# d=makegaussian(23,plot=True,sigma=2)  d=makegaussian(21,sigma=2)
+
+##############################################################################
+# fakedispersion - modified to accomodate user's input for gaussian parameters
+#  and sensor pixel width of the axis.
+##############################################################################
+#_fakedisparray = np.array([0.0, 0.0, 0.0, 0.0149098, 0.20077242, 0.61701065, 1.0,
+#                           0.61701065, 0.20077242, 0.0149098, 0.0, 0.0, 0.0])
+def fakedispersion(filename,like=False,pos=466,width=11,sigma=2.0):
+    """fakedispersion(filename,pos=466,width=13)
+    Given <filename> put a fake dispersion across column pos,
+    with width and write sci_<filename> as output. Will overwrite filename
+    the main problem is widths 
+    """
+    try:
+        if(width > 30):   # max set by _fakedisparray array of normalized gaussian vals.
+           width = 30
+
+        filename        = filename.strip()
+        msg             = "Open file"
+        msg             += '..get data'
+        with fits.open(filename) as f:
+            h               = f[0].header
+            d               = f[0].data.astype(np.float32)     # shape (NAXIS2,NAXIS1)
+        scale = d.max() + d.max()*1.5
+        fakedisparray   = makegaussian(width,sigma) * scale    # shape will be (width,)
+        if(pos < 0):
+            pos = h['NAXIS2']//2
+        msg             += '..do work'
+#        __fakelen       = fakedisparray.shape[0]
+#        __fakedisparray = fakedisparray[__fakelen//2 - width//2: 1+__fakelen//2 + width//2]
+        bot = pos - width//2
+        top = bot + width
+        pvec = np.repeat(fakedisparray,h['NAXIS1']).reshape(width,h['NAXIS1'])
+        #print(fakedisparray)
+        if(0): print(f"""
+   fakedisparray.shape       = {fakedisparray.shape}
+   h['NAXIS1']               = {h['NAXIS1']}
+   pos                       = {pos}
+   width                     = {width}
+   width//2                  = {width//2}
+   top                       = {top}
+   bot                       = {bot}
+   dist                      = {top - bot}
+   d[bot:top,:].shape        = {d[bot:top,:].shape}
+   pvec.shape                = {pvec.shape}
+   d.shape                   = {d.shape}
+""")
+        if(1):
+            d[bot:top,:] = d[bot:top,:] + pvec
+        else:
+            v = d[:,pos-width//2:1+pos+width//2]
+            maxscale = v.max()//2
+            d[:,pos-width//2:1+pos+width//2] = d[:,pos-width//2:1+pos+width//2] + (
+                d[:,pos-width//2:1+pos+width//2] + ( __fakedisparray * maxscale))
+        newname = 'fake_'+filename
+        print("# Writing %s" % newname)
+        nf         = fits.PrimaryHDU(d)
+        msg       += '..set header'
+        nf.header  = h
+        msg       += '..writeto'
+        maxd       = d[:,pos-width//2:1+pos+width//2].max()
+        #if(maxv > 65000):
+        #   d[:,pos-width//2:1+pos+width//2] = d[:,pos-width//2:1+pos+width//2] #/ 65000.0
+        nf.writeto(newname,output_verify='fix',overwrite=True)
+    except Exception as e:
+        print(f"""
+   msg                       = {msg}
+   pos                       = {pos}
+   width                     = {width}
+   width//2                  = {width//2}
+   top                       = {top}
+   bot                       = {bot}
+   dist                      = {top - bot}
+   d[bot:top,:].shape        = {d[bot:top,:].shape}
+   pvec.shape                = {pvec.shape}
+""")
+
+        raise
+
+# fakedispersion fakedispersion('190920_sun_1.fits',1075,7)
+
+
+##############################################################################
+#                                    Main
+#                               Regression Tests
+##############################################################################
+# HEREHEREHERE
+if __name__ == "__main__":
+    opts = optparse.OptionParser(usage="%prog "+__doc__)
+
+    opts.add_option("-l", "--like", action="store_true", dest="like",
+                   default=False,
+                   help="<bool>      random background with disp axis like given filenames.")
+
+    opts.add_option("-r", "--reference", action="store", dest="reference",
+                   default=None,
+                   help="<filename>  reference 1D spectrum.")
+
+    opts.add_option("-s", "--sigma", action="store", dest="sigma",
+                   default='2.0',
+                   help="<float>     Gaussian sigma [2.0]")
+
+    opts.add_option("-w", "--width", action="store", dest="dispwidth",
+                   default="11",
+                   help="<int>       the 'width' for fake star.")
+
+    opts.add_option("-v", "--verbose", action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>      be verbose about work.")
+
+    opts.add_option("-y", "--yaxis", action="store", dest="yposition",
+                   default="-1",
+                   help="<int>       row position to draw dispersion.")
+
+    (options, args) = opts.parse_args()
+
+    msg = ""   # PDB-DEBUG
+
+    try:
+        msg       = "options.yposition"
+        yposition = int(options.yposition)
+        msg       = "options.width"
+        dispwidth = int(options.dispwidth)
+        msg       = "options.sigma"
+        sigma     = float(options.sigma)
+    except Exception as e:
+        print(f"Error with {msg}\n{e.__str__()}",file=sys.stderr)
+        raise
+
+    for filename in args:
+        fakedispersion(filename,like=options.like,pos=yposition,width=dispwidth,sigma=sigma)
+
+
