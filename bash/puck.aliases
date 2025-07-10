@@ -1,0 +1,423 @@
+#############################################################################
+# .puck.aliases
+#############################################################################
+# sudo apt-get install xdotool
+function capsoff { xdotool key Caps_Lock; /usr/bin/setxkbmap -option "ctrl:nocaps" ;}
+function CAPSOFF { xdotool key Caps_Lock; /usr/bin/setxkbmap -option "ctrl:nocaps" ;}
+setxkbmap -option srvrkeys:none
+bind 'set enable-bracketed-paste off'             # allow paste to execute
+
+# handy aliases old and new
+alias grep="grep -s"
+alias h='history'
+alias j='jobs -l'
+alias liii='ls $iii'
+alias lls='ls -ld $1'
+alias ls='ls -FC'
+alias ll='ls -lF'
+alias lsd='file * | grep directory | grep -Eo "^.*:" | tr  ":" "/" | sort | column -x'
+alias lsize="ls -l | sort -nr -k 5 | tac"
+alias m=more
+alias mroe=more
+alias o="popd"
+alias popd="popd"
+alias psg="ps -eo \"%P %U %G %c \""
+alias pwd='pwd -P'            # physical, full path irrespective of links
+alias s='. ~/.puck.aliases'  # refresh aliases
+alias u="pushd"
+alias xiii='iii=`pwd`'
+alias liii='ls $iii'
+alias fv='fitsverify -l'
+
+function useenv { if test "$1" == ""; then
+                     (shopt -s nullglob; for f in $HOME/Environments/* ; do echo $(basename $f); done;)
+                  elif test -e "$HOME/Environments/$1" ; then 
+                     source "$HOME/Environments/$1/bin/activate"; 
+                  fi
+                }
+
+function pdflist()       { find $PWD -iname "*pdf" -exec ls -ld --time-style="+%Y-%m-%dT%H:%M:%S" \{} \; > pdffulltime.list;
+                            awk '/./ {print $6,$7;}' pdffulltime.list | sort -r | egrep -v '(boost|matplotlib|fitsblink)' >pdflist.list
+                         }
+function ..()            { cd ../$1;            echo ""; }
+function ...()           { cd ../../$1;         echo ""; }
+function ....()          { cd ../../..$1;       echo ""; }
+function .....()         { cd ../../../..$1;    echo ""; }
+function ......()        { cd ../../../../..$1; echo ""; }
+
+
+# swap grave and tilde
+#/usr/bin/xmodmap -e 'keycode  49 = asciitilde grave asciitilde grave'
+#dpkg --print-architecture
+# current places of interest
+function obs { if test -e "$HOME/Observations" ; then cd "$HOME/Observations"; fi }
+alias newobs='mkdir -p ./{usw/attic,RawData/attic,PreAnalysis,Analysis}'
+
+alias gitdoc="docker run -it --rm -v $(pwd -L):/docs --user $(id -u $USER):$(id -g $USER)  sphinxdoc/sphinx-latexpdf /bin/bash"
+
+# find things while ignoring certain paths
+function wlocate     { /usr/bin/locate $1  | grep -v "\(usr2\|/usr3\|anaconda\|Observations\|/home/emacs\|titan\)"; }
+
+function target      { if test -e ~/.aaaatarget; then rm ~/.aaaatarget; fi
+                       ln -s `pwd -P .` ~/.aaaatarget;
+                       ls -H ~/.aaaatarget;
+                     }
+
+function play        { playpen="$HOME/play/$1";
+                       if test -e $playpen; then
+                          pushd $playpen;
+                       else
+                          echo "$1 not found"
+                          pushd "$HOME/play/";
+                       fi
+                     }
+
+function helpdpkg    { echo "Help for dpkg";
+                       echo "  dpkg --print-foreign-architectures";
+                       echo "  dpkg --print-architecture";
+                       echo "  dpkg --list # installed packages";
+                     }
+
+
+#echo my.aliases group 1
+
+# grep -s be quiet about noisey messages
+# mroe because I mistype more this way mroe often than I should
+
+
+function fvl             {  ~/bin/fitsverify -l $1 | less -i ;}
+function fvle            {  ~/bin/fitsverify -e $1 | less -i ;}
+function today           { if test -d ~/aaaToday ; then cd ~/aaaToday; cd $(pwd); fi; }
+function current         { if test -e ~/current; then cd ~/current; cd $(pwd); fi; }
+
+# example of using a different install of PostgreSQL
+alias psql96="psql --cluster 9.6/main $*"
+
+# alias psql="psql -n $*"   # allows paste, lose arrows.
+
+alias oowriter='/usr/lib/libreoffice/program/soffice.bin --writer'
+alias oocalc='/usr/lib/libreoffice/program/soffice.bin --calc'
+
+alias xephem='(cd /usr/local/xephem; /usr/local/bin/xephem > /dev/null 2>&1)'
+
+# use fontsel, for each of the items on top line, mouse it and it will give list of options.
+alias myterm="xgterm -font -adobe-courier-medium-r-normal-*-25-*-*-*-*-*-*-* -sb -fg 'medium sea green' -bg black"
+
+#-adobe-helvetica-medium-r-normal-*-25-180-100-100-*-130-iso8859-1
+
+# find and list python files in this directory.
+function pyfiles         { file * | awk -F: '/Python.*ASCII/ {print $1;}'; }
+
+# remove spaces from file names, expscially for fits files
+function fixnames        { (for f in *; do if [[ "$f" =~ " " ]] ; then mv "$f" ${f// /_} ; fi ; done)
+                           (shopt -s nullglob; for f in *.*.*fit    ; do mv  $f  ${f//./_}        ; done)
+                           (shopt -s nullglob; for f in *-*fit      ; do mv  $f  ${f//-/m}        ; done)
+                           (shopt -s nullglob; for f in *+*fit      ; do mv  $f  ${f//+/p}        ; done)
+                           (shopt -s nullglob; for f in *_fit       ; do mv  $f  ${f/%_fit/.fits} ; done)
+                           (shopt -s nullglob; for f in *.fit       ; do mv  $f  ${f/%.fit/.fits} ; done)
+                           (shopt -s nullglob; for f in *           ; do if test -f $f ; then chmod -x $f; fi; done)
+                         }
+# command line to pop up a 'browser'
+function browser {  /opt/google/chrome/chrome --lang=en-US --new-window $* >/dev/null; }
+
+#------------------------------------ EMACS ----------------------------------
+
+function emacsro         {
+   /usr/bin/emacs $* --eval '(progn (setq buffer-read-only t) (set-background-color "white"))' 2>/dev/null;
+                         }
+
+# in all unique file names in ~/.emacs.history look for string $1
+function emhistory       {
+                          for f in $(awk '{print $3;}' ~/.emacs.history | tr -d '"' |  sort | uniq  ); do
+                             if test -f $f ; then grep -Hins $1 $f; fi
+                          done
+                          }
+
+# in unique file names passing a simple name filter $1, in ~/.emacs.history look for string $2
+function emhistoryfilter {
+                            for f in $(awk '{print $3;}' ~/.emacs.history | tr -d '"' | grep "$1" sort | uniq  ); do
+                               if test -f $f ; then grep -Hins $2 $f; fi
+                           done
+                         }
+
+#----------------------------------------------------------------------------
+
+
+
+# cd to the directory of a a qualified path to a file;
+function cdd()           { cd $(dirname $1);}
+function udd()           { pushd $(dirname $1);}
+
+
+# mv some.file to `timestamp`.some.file
+# handy `timestamp` or $(timestamp) to add various
+# timestampes to bash command line parts (filenames).
+function timestamp()     { date --iso-8601=seconds | tr ":" "-" ; }
+function jpldate()       { date +%d%b%Y; }
+function jpldatetime()   { date +%d%b%Y_%H.%M.%S; }
+function here()          { echo "$(date +%d%b%Y_%H.%M.%S) : $(pwd -P)" >> ~/.wayne/where; }
+function where()         { tail $1 ~/.wayne/where; }
+
+#-------------------------------- DEJOUR ------------------------------------
+# capture CWD into the $dejour variable. update this script, next bash starts
+# will see that value.
+alias ddd="pushd . ;cd \$dejour"
+alias dddd="echo \$dejour"
+export dejour=/home/wayne/Observations/7Aug2024/PreAnalysis
+function xddd()          { sed -e "s,^dejour.*$,dejour=`pwd`,g" < ~/.puck.aliases >/tmp/alias;
+                            mv ~/.puck.aliases ~/.my.aliases.`timestamp`;
+                            mv /tmp/alias ~/.puck.aliases;
+                            . ~/.puck.aliases;
+                            export dejour=`pwd`
+                         }
+
+#------------------------------- OBSERVATIONS -------------------------------
+alias obs='cd ~/Observations/Chile/16Jan2025/PreAnalysis && ls'
+alias chile='cd ~/Observations/Chile'
+
+alias ooo="pushd . ;cd \$obsplace"
+alias oooo="echo \$obsplace"
+export obsplace=/home/wayne/Observations/Chile/11Aug2024/PreAnalysis
+function xooo()          { sed -e "s,^obsplace.*$,obsplace=`pwd`,g" < ~/.puck.aliases >/tmp/alias
+                            mv ~/.puck.aliases ~/.my.aliases.`timestamp`
+                            mv /tmp/alias ~/.puck.aliases
+                            . ~/.puck.aliases
+                            export obsplace=`pwd`
+                         }
+
+
+function tclsh() { rlwrap -c tclsh $*; }
+
+
+# Make two lists pdffulltime.list with all in find order; and pdflist.list in reverse time
+# order missing some common big file banks of everything below where command is run.
+
+
+#----------------------------------------- git -----------------------------------------
+function g1()            { xx=$(find /home/git -maxdepth 2 -type d | grep -i "$1") ; }
+
+
+function g()             { if test "$1" == ""; then
+                              cd /home/git/external;
+                           else
+                              cd /home/git/external
+                              if [ -e "$1" ] ; then
+                                 cd "$1"
+                              fi
+                              g1 "$1";
+                              echo $xx ;
+                           fi
+                         }
+
+function gitdiff         { for f in $(/usr/bin/ls -1 /home/wayne/bin); do
+                                if $(file $f | grep -q ASCII) ; then
+                                   #echo -n "good $f"
+                                   if [ -e ./$(basename $f) ]; then
+                                      diff -q $f /home/wayne/bin;
+                                   fi;
+                                fi;
+                             done;
+                         }
+
+function p               { a="/home/git/pre/";
+                           shopt -s globstar
+                           if [[ "$1" =~ "smtsci_iraf" ]]; then   # other places clones installed.
+                              go="$HOME/iraf/smtsci_iraf"
+                           elif [[ "$1" =~ "APO_NICFPS_Pipeline" ]]; then
+                              go="$HOME/iraf/APO_NICFPS_Pipeline"
+                           elif test "$1" == ""; then go=$a;
+                           else
+                              b="$1**/";
+                              c="";
+                              if test ! "$c" == "" ; then c="/$2"; fi;
+                              go="$a$b$c";
+                              #echo "adjusted target a" $a "b" $b "c" $c "go" $go;
+                           fi
+                           newgo=${go/.git/};          #echo "newgo" $newgo
+                           cd $newgo
+                           shopt -u globstar
+                         }
+
+function short ()        { cd ~/shorts/$1; cd $(pwd); }
+
+# peek into archive files .tar.gz .zip etc to see if I
+# want them to actually run. Some make a directory,
+# some IDIOTS put things into the CWD!!!
+# NASA IDIOTS think .gz files are just tar files!
+function peek()          {   pfile="$1" ;
+                           if [[ "$pfile" =~ "Configuration" ]]; then
+                              ufile="$pfile"
+                           else
+                              if [[ ! -e "$1" ]] ; then
+                                 ufile="$HOME/Configuration/$1"
+                              else
+                                 ufile="$pfile"
+                              fi
+                           fi
+                           echo Looking for "$ufile"
+                           ext=${ufile//*./};
+                           case $ext in
+                           tarz | taz | gz | tgz) tar tzf "$ufile" | head
+                               ;;
+                           xz*) tar tJf "$ufile" | head
+                               ;;
+                           bz*) tar tjf "$ufile" | head
+                               ;;
+                           zip) unzip -l "$ufile" | head
+                               ;;
+                           tar) tar tf  "$ufile" | head
+                               ;;
+                           Z  ) echo "Uncompress has no peek ability."
+                               ;;
+                           *)   echo $1 " do not understand how to take a peek. " ${1//*./}
+                          esac;
+                          echo -n "Unpack $ufile here? "
+                          read -p "y/n [n]" ans
+                          if [[ $ans == "y" ]]; then
+                              case $ext in
+                              tarz | taz | gz | tgz) tar xvzf "$ufile"
+                                  ;;
+                              xz*) tar xvJf "$ufile"
+                                  ;;
+                              bz*) tar xvjf "$ufile"
+                                  ;;
+                              zip) unzip "$ufile"
+                                  ;;
+                              tar) tar xvf  "$ufile"
+                                  ;;
+                              Z  ) echo "Uncompress has no peek ability."
+                                  ;;
+                              *)   echo $1 " do not understand how to take a peek. " ${1//*./}
+                             esac;
+
+                          fi
+                         }
+# recent this directory
+function r()             { ls -lt $* | grep -v "[ ][.]" | head $RECENT_COUNT ; }
+function recent()        { ls -lt $* | grep -v "[ ][.]" | head -25 ; }
+function rrecent()       { find . -type f -mtime -2 | xargs ls -l --time-style=+%Y_%m_%d_%H.%M.%S | awk -e '{print $6,$7;}' | sort -r ; }
+# get the md5sums of regular files deep of this directory
+function sumum()         { if [ ! -z $1 ]; then
+                             find `pwd` -type f -H -exec md5sum \{} \;  >> $1 &
+                             else echo "error: usage: sumum <output file>";
+                           fi
+                         }
+function shaum()         { if [ ! -z $1 ]; then
+                              find `pwd` -type f -H -exec sha1sum \{} \;  >> $1 &
+                              else echo "error: usage: sumum <output file>";
+                           fi
+                         }
+
+function seepath ()      { echo $PATH | tr ':' '\n'; }
+
+# guard the /bin/dd function anyway  .
+function dd             { diff -w $1 `pwd` | less; }
+
+# I HATE COLORS (can't see that blue too well anyway.
+unset LS_COLORS
+
+#echo .my.aliases prompts
+#PROMPT_COMMAND='echo -ne "\033]0;${USER}@${HOSTNAME}: ${PWD}\007"'
+PROMPT_COMMAND='echo -ne "\033]0;${PWD}\007"'
+#export PYTHONPATH=$HOME/bin/python-user-dist
+
+# when way down in a tree, shorten the prompt up.
+
+# things I want exported:
+# Some IDIOT thinks waking up on some cold curb other other than
+# $HOME is NOT STUPID.
+if [ "`pwd`" == "$HOME/Desktop" ]; then cd; fi
+
+# some unixes pester you when mail shows up.
+unset MAILCHECK  # stop pesky mail messages
+
+# WARNING here HISTIGNORE '<space><tab>' lines starting with
+# HISTIGNORE characters are not saved in history.
+export HISTIGNORE="[ 	]*"
+
+# make sure we have a $HOME/bin or force one.
+if [[ ! "$PATH" =~  "$HOME/bin" ]] ; then
+   if test ! -e $HOME/bin ; then mkdir -p $HOME/bin; fi; # add one
+   export PATH=$PATH:$HOME/bin;                          # put on path
+fi
+
+# make the default editor the standard Unix vi and not some castrated
+# wimp editor.
+export EDITOR=/usr/bin/vi
+
+# add a few places to look for man pages.
+if [[ ! "$MANPATH" =~ "$HOME/local/man" ]] ; then
+   export MANPATH=$MANPATH:$HOME/local/man;
+fi
+
+# make later bashes quit quoting shell vars.
+if [[ `bash --version` =~ '4.2' ]] ; then shopt -s direxpand; fi
+
+# maintain all history. Not restart each session
+shopt -s histappend
+
+# make ls treat [a-z] shell wildcards as case sensitive !!!YOU IDIOTS!!!
+export LC_ALL=C
+if test -e ~/.Aluminum.keycodes  ; then
+   sudo bash -c "echo 3 > /sys/module/hid_apple/parameters/fnmode"
+   if [ ! -e /sys/module/hid_apple ]; then sudo /sbin/modprobe -q hid_apple; fi;
+   /usr/bin/setxkbmap -option "ctrl:nocaps"   # force caps as ctrl
+   /usr/bin/xmodmap ~/.Aluminum.keycodes
+   #echo .scorpius.alias implemented with ~/.Aluminum.keycodes.
+else
+   if test -e ~/.Xmodmap; then
+      /usr/bin/xmodmap ~/.Xmodmap  # for other PC/generic keyboards
+   fi
+fi
+
+function wgmake { $(make ${wgmakeparms} > $1 2>&1 &); tail -f $1;}
+
+
+#-----------------------------------------------------------------------------
+
+function concordance { grep -oh "[, ]*\([A-Za-z]\+\)[.,]\+*" $1 | tr -d '.' | \
+  gawk -e '/./ {gsub(/[., ]+/, "", \$0); if(length(\$0) > 3) {print tolower(\$0);}}' | sort | uniq -c | sort -n | gawk -e '/./ {if(\$1 > 30) {print \$2;}}' ; }
+
+# ---------------------------------  PROMPT MAGIC ---------------------------------
+if test "$USER" = "root" ; then
+   export PS1='ROOT \h: (\j) \w [\!] '
+else
+   export PS1='(\j) \w [\!] '
+fi
+
+# the prompt the way I like it.
+function shortprompt     { PROMPT_DIRTRIM=3
+                           export PS1='(\j) \w [\!] '
+                         }
+if [ "$SSH_TTY" ]; then
+   export PS1='\h  (\j) \w [\!] ';
+else
+   export PS1='\h (\j) \w [\!] ';
+   #export PROMPT_DIRTRIM=3
+fi
+
+function longprompt { if [ "$SSH_TTY" ]; then
+    export PS1='\h (\j) \h \w [\!] ';
+    else
+    export PS1='\h (\j) \w [\!] ';
+    fi;
+    }
+
+# test if sudo -s in a window; then change to root terminal profiles
+if [ "$USER" == "root" ]; then 
+   xdotool key shift+F10 r 5;
+   export PS1='ROOT \h: (\j) \w [\!] '
+fi
+
+#----------------------------------- Mess with paths ------------------------
+
+if test -e $HOME/.docker.aliases; then
+   . $HOME/.docker.aliases
+fi
+
+if [[ ! "$PATH" =~ $HOME/.iraf/smtsci/bin ]]; then
+   export PATH="$PATH:$HOME/.iraf/smtsci/bin"
+fi
+
+
+export PICO_SDK_PATH=/home/git/external/pico/pico-sdk
