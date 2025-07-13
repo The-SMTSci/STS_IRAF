@@ -1,0 +1,6 @@
+#!/bin/bash
+
+cd /home/wayne/bin/Topcat
+
+#java -classpath topcat-full.jar:postgresql-9.4.1208.jre6.jar -Djdbc.drivers=org.postgresql.Driver uk.ac.starlink.topcat.Driver
+java -classpath topcat-full.jar:postgresql-42.7.4.jar -Djdbc.drivers=org.postgresql.Driver uk.ac.starlink.topcat.Driver $*
