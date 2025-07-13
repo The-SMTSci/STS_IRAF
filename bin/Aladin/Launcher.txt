@@ -1,0 +1,6 @@
+/home/wayne/bin/aladin
+
+A script that is:
+
+#!/bin/bash
+/opt/aladin/bin/Aladin -script="vega; flipflop vh" $*
